@@ -93,7 +93,7 @@ export function findAdjacentBadgeRect(textEl: Element): Element | null {
  */
 export function resolveCloneTarget(target: Element, clientX?: number, clientY?: number): Element | null {
 	if (!target) return null;
-	const isSvgRoot = (typeof SVGSVGElement !== "undefined" && target instanceof SVGSVGElement) || localName(target) === "svg";
+	const isSvgRoot = (typeof (target as any).instanceOf === "function" ? (target as any).instanceOf(SVGSVGElement) : false) || localName(target) === "svg";
 	if (isSvgRoot) return null;
 
 	const svg = target.closest("svg");
@@ -297,7 +297,7 @@ export function findTextInCard(start: Element, clientX?: number, clientY?: numbe
 	const direct = asText(start);
 	if (direct) return direct;
 
-	const isSvg = (typeof SVGSVGElement !== "undefined" && start instanceof SVGSVGElement) || localName(start) === "svg";
+	const isSvg = (typeof (start as any).instanceOf === "function" ? (start as any).instanceOf(SVGSVGElement) : false) || localName(start) === "svg";
 	const svg = isSvg ? start : (start.closest("svg") ?? start.querySelector("svg"));
 	if (!svg) return null;
 

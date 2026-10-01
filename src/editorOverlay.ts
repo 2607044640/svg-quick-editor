@@ -18,27 +18,43 @@ export interface OverlayOptions {
  * Enter / blur commits. Escape cancels. IME composition is not treated as Enter.
  */
 export function openTextOverlay(parent: HTMLElement, opts: OverlayOptions): OverlayHandle {
-	const input = document.createElement("input");
-	input.type = "text";
-	input.className = "a1-svg-edit";
+	const input = (typeof (parent as any).createEl === "function")
+		? (parent as any).createEl("input", { type: "text", cls: "a1-svg-edit" })
+		: document.createElement("input");
+	if (input.parentElement !== parent) {
+		input.type = "text";
+		input.className = "a1-svg-edit";
+	}
 	input.value = opts.value;
 	input.setAttribute("aria-label", "Edit SVG text");
 	const width = Math.max(opts.rect.width + 24, 80);
 	const height = Math.max(opts.rect.height + 6, 26);
-	input.style.left = `${Math.round(opts.rect.left)}px`;
-	input.style.top = `${Math.round(opts.rect.top - 2)}px`;
-	input.style.width = `${Math.round(width)}px`;
-	input.style.height = `${Math.round(height)}px`;
-	input.style.fontSize = opts.fontSize || "14px";
-	input.style.fontFamily = opts.fontFamily || "inherit";
-	input.style.color = opts.color || "inherit";
+	if (typeof (input as any).setCssStyles === "function") {
+		(input as any).setCssStyles({
+			left: `${Math.round(opts.rect.left)}px`,
+			top: `${Math.round(opts.rect.top - 2)}px`,
+			width: `${Math.round(width)}px`,
+			height: `${Math.round(height)}px`,
+			fontSize: opts.fontSize || "14px",
+			fontFamily: opts.fontFamily || "inherit",
+			color: opts.color || "inherit",
+		});
+	} else {
+		input.style.left = `${Math.round(opts.rect.left)}px`;
+		input.style.top = `${Math.round(opts.rect.top - 2)}px`;
+		input.style.width = `${Math.round(width)}px`;
+		input.style.height = `${Math.round(height)}px`;
+		input.style.fontSize = opts.fontSize || "14px";
+		input.style.fontFamily = opts.fontFamily || "inherit";
+		input.style.color = opts.color || "inherit";
+	}
 
 	let closed = false;
 	let composing = false;
 
 	// Suppress Alt key release default behavior so Windows Electron does not steal focus to the application menu
 	const suppressAlt = (e: KeyboardEvent) => {
-		if (e.key === "Alt" || e.keyCode === 18) {
+		if (e.key === "Alt") {
 			e.preventDefault();
 		}
 	};
@@ -69,7 +85,7 @@ export function openTextOverlay(parent: HTMLElement, opts: OverlayOptions): Over
 		composing = false;
 	});
 	input.addEventListener("keydown", (e) => {
-		if (e.isComposing || composing || e.keyCode === 229) return;
+		if (e.isComposing || composing || e.key === "Process") return;
 		if (e.key === "Enter") {
 			e.preventDefault();
 			e.stopPropagation();

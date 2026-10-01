@@ -112,7 +112,7 @@ function findAdjacentBadgeRect(textEl) {
 function resolveCloneTarget(target, clientX, clientY) {
   if (!target)
     return null;
-  const isSvgRoot = typeof SVGSVGElement !== "undefined" && target instanceof SVGSVGElement || localName(target) === "svg";
+  const isSvgRoot = (typeof target.instanceOf === "function" ? target.instanceOf(SVGSVGElement) : false) || localName(target) === "svg";
   if (isSvgRoot)
     return null;
   const svg = target.closest("svg");
@@ -273,7 +273,7 @@ function findTextInCard(start, clientX, clientY) {
   const direct = asText(start);
   if (direct)
     return direct;
-  const isSvg = typeof SVGSVGElement !== "undefined" && start instanceof SVGSVGElement || localName(start) === "svg";
+  const isSvg = (typeof start.instanceOf === "function" ? start.instanceOf(SVGSVGElement) : false) || localName(start) === "svg";
   const svg = isSvg ? start : start.closest("svg") ?? start.querySelector("svg");
   if (!svg)
     return null;
@@ -490,24 +490,38 @@ function serializeSvg(el) {
 
 // src/editorOverlay.ts
 function openTextOverlay(parent, opts) {
-  const input = document.createElement("input");
-  input.type = "text";
-  input.className = "a1-svg-edit";
+  const input = typeof parent.createEl === "function" ? parent.createEl("input", { type: "text", cls: "a1-svg-edit" }) : document.createElement("input");
+  if (input.parentElement !== parent) {
+    input.type = "text";
+    input.className = "a1-svg-edit";
+  }
   input.value = opts.value;
   input.setAttribute("aria-label", "Edit SVG text");
   const width = Math.max(opts.rect.width + 24, 80);
   const height = Math.max(opts.rect.height + 6, 26);
-  input.style.left = `${Math.round(opts.rect.left)}px`;
-  input.style.top = `${Math.round(opts.rect.top - 2)}px`;
-  input.style.width = `${Math.round(width)}px`;
-  input.style.height = `${Math.round(height)}px`;
-  input.style.fontSize = opts.fontSize || "14px";
-  input.style.fontFamily = opts.fontFamily || "inherit";
-  input.style.color = opts.color || "inherit";
+  if (typeof input.setCssStyles === "function") {
+    input.setCssStyles({
+      left: `${Math.round(opts.rect.left)}px`,
+      top: `${Math.round(opts.rect.top - 2)}px`,
+      width: `${Math.round(width)}px`,
+      height: `${Math.round(height)}px`,
+      fontSize: opts.fontSize || "14px",
+      fontFamily: opts.fontFamily || "inherit",
+      color: opts.color || "inherit"
+    });
+  } else {
+    input.style.left = `${Math.round(opts.rect.left)}px`;
+    input.style.top = `${Math.round(opts.rect.top - 2)}px`;
+    input.style.width = `${Math.round(width)}px`;
+    input.style.height = `${Math.round(height)}px`;
+    input.style.fontSize = opts.fontSize || "14px";
+    input.style.fontFamily = opts.fontFamily || "inherit";
+    input.style.color = opts.color || "inherit";
+  }
   let closed = false;
   let composing = false;
   const suppressAlt = (e) => {
-    if (e.key === "Alt" || e.keyCode === 18) {
+    if (e.key === "Alt") {
       e.preventDefault();
     }
   };
@@ -539,7 +553,7 @@ function openTextOverlay(parent, opts) {
     composing = false;
   });
   input.addEventListener("keydown", (e) => {
-    if (e.isComposing || composing || e.keyCode === 229)
+    if (e.isComposing || composing || e.key === "Process")
       return;
     if (e.key === "Enter") {
       e.preventDefault();
@@ -608,6 +622,39 @@ function ensureMarker(svgMarkup, marker) {
 function cleanSvgHtml(html) {
   return html.replace(/\s*class="[^"]*a1-svg-hover-[^"]*"/g, "").replace(/\s*a1-svg-hover-text/g, "").replace(/\s*a1-svg-hover-image/g, "").replace(/\s+data-a1-[a-z0-9_-]+(?:="[^"]*")?/g, "").trim();
 }
+function replaceSvgChildrenFromMarkup(target, markup) {
+  const doc = target.ownerDocument || (typeof document !== "undefined" ? document : null);
+  const win = doc?.defaultView || (typeof window !== "undefined" ? window : globalThis);
+  const Parser = win?.DOMParser || (typeof DOMParser !== "undefined" ? DOMParser : null);
+  if (Parser) {
+    try {
+      const parsedDoc = new Parser().parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${markup}</svg>`, "image/svg+xml");
+      const root = parsedDoc.documentElement;
+      while (target.firstChild) {
+        target.removeChild(target.firstChild);
+      }
+      while (root.firstChild) {
+        const node = doc?.adoptNode ? doc.adoptNode(root.firstChild) : root.firstChild;
+        target.appendChild(node);
+      }
+      return;
+    } catch (e) {
+      console.error("DOMParser error in replaceSvgChildrenFromMarkup:", e);
+    }
+  }
+  try {
+    if (doc && doc.createRange) {
+      const range = doc.createRange();
+      const frag = range.createContextualFragment(markup);
+      while (target.firstChild) {
+        target.removeChild(target.firstChild);
+      }
+      target.appendChild(frag);
+      return;
+    }
+  } catch {
+  }
+}
 var SvgHistoryManager = class {
   constructor() {
     this.initialContent = /* @__PURE__ */ new WeakMap();
@@ -665,7 +712,7 @@ var SvgHistoryManager = class {
     const redoStack = this.redoStacks.get(target) || [];
     redoStack.push(currentHtml);
     this.redoStacks.set(target, redoStack);
-    target.innerHTML = prevHtml;
+    replaceSvgChildrenFromMarkup(target, prevHtml);
     return true;
   }
   redo(svg) {
@@ -680,7 +727,7 @@ var SvgHistoryManager = class {
     const undoStack = this.undoStacks.get(target) || [];
     undoStack.push(currentHtml);
     this.undoStacks.set(target, undoStack);
-    target.innerHTML = nextHtml;
+    replaceSvgChildrenFromMarkup(target, nextHtml);
     return true;
   }
   isDirty(svg) {
@@ -708,7 +755,7 @@ var SvgHistoryManager = class {
       return;
     const initial = this.initialContent.get(target);
     if (initial != null) {
-      target.innerHTML = initial;
+      replaceSvgChildrenFromMarkup(target, initial);
     }
     this.clear(target);
   }
@@ -740,7 +787,7 @@ var DEFAULT_SETTINGS = {
 function isDiagramSvg(el) {
   if (!el)
     return false;
-  const isSvg = typeof SVGSVGElement !== "undefined" && el instanceof SVGSVGElement || (el.localName || el.tagName.toLowerCase()).endsWith("svg");
+  const isSvg = (typeof el.instanceOf === "function" ? el.instanceOf(SVGSVGElement) : false) || (el.localName || el.tagName.toLowerCase()).endsWith("svg");
   if (!isSvg)
     return false;
   if (el.closest("button, .oit-floating-zoom-btn, .clickable-icon, .svg-lightbox-header, .a1-svg-modal-header, .nav-action-button, [class*='overlay'], [class*='toolbar'], .workspace-tab-header, .view-header")) {
@@ -766,10 +813,11 @@ function isDiagramSvg(el) {
 function getLocaleStrings() {
   let lang = "en";
   try {
-    lang = ((0, import_obsidian.getLanguage)?.() || window.localStorage?.getItem("language") || window.moment?.locale() || "en").toLowerCase();
+    lang = ((0, import_obsidian.getLanguage)() || "en").toLowerCase();
   } catch {
+    lang = "en";
   }
-  const isZh = lang === "zh" || lang.startsWith("zh-") || lang.startsWith("zh_");
+  const isZh = lang.startsWith("zh");
   if (isZh) {
     return {
       modalTitleDefault: "SVG \u56FE\u50CF\u7F16\u8F91\u5668",
@@ -924,7 +972,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
   matchesObsidianHotkey(evt, hotkey) {
     if (!hotkey || !hotkey.key)
       return false;
-    const isMac = typeof navigator !== "undefined" && navigator.platform?.toUpperCase().includes("MAC");
+    const isMac = import_obsidian.Platform.isMacOS;
     const mods = (hotkey.modifiers || []).map((m) => m.toLowerCase());
     const wantsCtrl = mods.includes("ctrl") || mods.includes("control") || !isMac && mods.includes("mod");
     const wantsMeta = mods.includes("meta") || mods.includes("cmd") || mods.includes("command") || isMac && mods.includes("mod");
@@ -946,7 +994,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
   matchesHotkey(evt, hotkeyStr) {
     if (!hotkeyStr || !hotkeyStr.trim())
       return false;
-    const isMac = typeof navigator !== "undefined" && navigator.platform?.toUpperCase().includes("MAC");
+    const isMac = import_obsidian.Platform.isMacOS;
     const parts = hotkeyStr.split("+").map((p) => p.trim().toLowerCase());
     const hasCtrl = parts.includes("ctrl") || parts.includes("control") || !isMac && parts.includes("mod");
     const hasMeta = parts.includes("meta") || parts.includes("cmd") || parts.includes("command") || isMac && parts.includes("mod");
@@ -1602,22 +1650,46 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     titleRow.className = "a1-svg-modal-title-row";
     const titleDiv = document.createElement("div");
     titleDiv.className = "a1-svg-modal-title";
-    titleDiv.innerHTML = `
-			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--interactive-accent, #7c9cff)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">
-				<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-				<circle cx="8.5" cy="8.5" r="1.5"/>
-				<polyline points="21 15 16 10 5 21"/>
-			</svg>
-			<span>${title}</span>
-		`;
+    try {
+      const svgIcon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svgIcon.setAttribute("width", "16");
+      svgIcon.setAttribute("height", "16");
+      svgIcon.setAttribute("viewBox", "0 0 24 24");
+      svgIcon.setAttribute("fill", "none");
+      svgIcon.setAttribute("stroke", "var(--interactive-accent, #7c9cff)");
+      svgIcon.setAttribute("stroke-width", "2");
+      svgIcon.setAttribute("stroke-linecap", "round");
+      svgIcon.setAttribute("stroke-linejoin", "round");
+      const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      rect.setAttribute("x", "3");
+      rect.setAttribute("y", "3");
+      rect.setAttribute("width", "18");
+      rect.setAttribute("height", "18");
+      rect.setAttribute("rx", "2");
+      rect.setAttribute("ry", "2");
+      const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      circle.setAttribute("cx", "8.5");
+      circle.setAttribute("cy", "8.5");
+      circle.setAttribute("r", "1.5");
+      const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+      polyline.setAttribute("points", "21 15 16 10 5 21");
+      svgIcon.appendChild(rect);
+      svgIcon.appendChild(circle);
+      svgIcon.appendChild(polyline);
+      titleDiv.appendChild(svgIcon);
+    } catch {
+    }
+    const titleSpan = document.createElement("span");
+    titleSpan.textContent = title;
+    titleDiv.appendChild(titleSpan);
     const hintsDiv = document.createElement("div");
     hintsDiv.className = "a1-svg-modal-hints";
-    hintsDiv.innerHTML = `
-			<span class="a1-svg-modal-badge">${i18n.badgeEdit}</span>
-			<span class="a1-svg-modal-badge">${i18n.badgeDelete}</span>
-			<span class="a1-svg-modal-badge">${i18n.badgeClone}</span>
-			<span class="a1-svg-modal-badge">${i18n.badgeUndoRedo}</span>
-		`;
+    for (const badgeText of [i18n.badgeEdit, i18n.badgeDelete, i18n.badgeClone, i18n.badgeUndoRedo]) {
+      const badge = document.createElement("span");
+      badge.className = "a1-svg-modal-badge";
+      badge.textContent = badgeText;
+      hintsDiv.appendChild(badge);
+    }
     titleRow.appendChild(titleDiv);
     titleRow.appendChild(hintsDiv);
     const actionGroup = document.createElement("div");
@@ -1630,7 +1702,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       openInTabBtn.title = "Open note/file in Obsidian";
       openInTabBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        this.app.workspace.openLinkText(relPath, "", false);
+        void this.app.workspace.openLinkText(relPath, "", false);
       });
       actionGroup.appendChild(openInTabBtn);
     }
@@ -1644,7 +1716,16 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     header.appendChild(actionGroup);
     const body = document.createElement("div");
     body.className = "a1-svg-modal-body";
-    body.innerHTML = rawSvgContent;
+    try {
+      const parsed = new DOMParser().parseFromString(rawSvgContent, "image/svg+xml");
+      const rootSvg = parsed.documentElement;
+      if (rootSvg) {
+        const adopted = document.adoptNode ? document.adoptNode(rootSvg) : rootSvg;
+        body.appendChild(adopted);
+      }
+    } catch (err) {
+      console.error("Failed to parse modal SVG via DOMParser:", err);
+    }
     const modalSvg = body.querySelector("svg");
     if (modalSvg) {
       this.history.setActiveSvg(modalSvg);
@@ -1791,7 +1872,7 @@ var A1SvgQuickEditorSettingTab = class extends import_obsidian.PluginSettingTab 
     const i18n = getLocaleStrings();
     new import_obsidian.Setting(containerEl).setName(i18n.settingHotkeyName).setDesc(i18n.settingHotkeyDesc).addText((text) => {
       text.setValue(this.plugin.settings.openEditorHotkey);
-      text.inputEl.addEventListener("keydown", async (e) => {
+      text.inputEl.addEventListener("keydown", (e) => {
         if (["Control", "Shift", "Alt", "Meta"].includes(e.key))
           return;
         e.preventDefault();
@@ -1809,8 +1890,10 @@ var A1SvgQuickEditorSettingTab = class extends import_obsidian.PluginSettingTab 
         const combination = parts.join("+");
         text.setValue(combination);
         this.plugin.settings.openEditorHotkey = combination;
-        await this.plugin.saveSettings();
-        new import_obsidian.Notice(i18n.settingUpdatedNotice(combination));
+        void (async () => {
+          await this.plugin.saveSettings();
+          new import_obsidian.Notice(i18n.settingUpdatedNotice(combination));
+        })();
       });
     }).addExtraButton((btn) => {
       btn.setIcon("reset").setTooltip(i18n.settingResetTooltip).onClick(async () => {

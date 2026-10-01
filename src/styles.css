@@ -2,7 +2,7 @@
    so a transformed preview pane or floating lightbox cannot clip or cover it. */
 .a1-svg-edit {
 	position: fixed;
-	z-index: 100010 !important;
+	z-index: 100010;
 	box-sizing: border-box;
 	margin: 0;
 	padding: 0 8px;
@@ -21,17 +21,20 @@
 }
 
 .a1-svg-hover-text {
-	cursor: text !important;
+	cursor: text;
 	outline: 1.5px dashed color-mix(in srgb, var(--interactive-accent, #7c9cff) 85%, transparent);
 	outline-offset: 3px;
 	filter: drop-shadow(0 0 4px color-mix(in srgb, var(--interactive-accent, #7c9cff) 50%, transparent));
 }
 
+img.a1-svg-hover-image,
+div.a1-svg-hover-image,
+svg.a1-svg-hover-image,
 .a1-svg-hover-image {
-	outline: 2px solid color-mix(in srgb, var(--interactive-accent, #7c9cff) 75%, transparent) !important;
-	outline-offset: 3px !important;
-	border-radius: 6px !important;
-	cursor: pointer !important;
+	outline: 2px solid color-mix(in srgb, var(--interactive-accent, #7c9cff) 75%, transparent);
+	outline-offset: 3px;
+	border-radius: 6px;
+	cursor: pointer;
 	transition: outline-color 0.15s ease;
 }
 

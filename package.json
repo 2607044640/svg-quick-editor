@@ -1,6 +1,6 @@
 {
   "name": "svg-quick-editor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "F2 inline editor for SVG text chips. Empty text deletes the whole chip. Alt+drag duplicates a chip.",
   "main": "main.js",
   "scripts": {

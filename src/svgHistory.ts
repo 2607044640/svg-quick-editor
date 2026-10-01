@@ -8,6 +8,45 @@ export function cleanSvgHtml(html: string): string {
 }
 
 /**
+ * Safely parses and replaces all child nodes of an SVG element from a markup string
+ * using DOMParser or Range context, completely avoiding unsafe assignments to innerHTML.
+ */
+export function replaceSvgChildrenFromMarkup(target: SVGSVGElement, markup: string): void {
+	const doc = target.ownerDocument || (typeof document !== "undefined" ? document : null);
+	const win = doc?.defaultView || (typeof window !== "undefined" ? window : (globalThis as any));
+	const Parser = (win as any)?.DOMParser || (typeof DOMParser !== "undefined" ? DOMParser : null);
+	if (Parser) {
+		try {
+			const parsedDoc = new Parser().parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${markup}</svg>`, "image/svg+xml");
+			const root = parsedDoc.documentElement;
+			while (target.firstChild) {
+				target.removeChild(target.firstChild);
+			}
+			while (root.firstChild) {
+				const node = doc?.adoptNode ? doc.adoptNode(root.firstChild) : root.firstChild;
+				target.appendChild(node);
+			}
+			return;
+		} catch (e) {
+			console.error("DOMParser error in replaceSvgChildrenFromMarkup:", e);
+		}
+	}
+
+	// Fallback using createContextualFragment without innerHTML
+	try {
+		if (doc && doc.createRange) {
+			const range = doc.createRange();
+			const frag = range.createContextualFragment(markup);
+			while (target.firstChild) {
+				target.removeChild(target.firstChild);
+			}
+			target.appendChild(frag);
+			return;
+		}
+	} catch {}
+}
+
+/**
  * In-memory Undo/Redo history manager for SVG editing.
  * Tracks temporary snapshots per SVG element during an editing session.
  */
@@ -71,7 +110,7 @@ export class SvgHistoryManager {
 		redoStack.push(currentHtml);
 		this.redoStacks.set(target, redoStack);
 
-		target.innerHTML = prevHtml;
+		replaceSvgChildrenFromMarkup(target, prevHtml);
 		return true;
 	}
 
@@ -88,7 +127,7 @@ export class SvgHistoryManager {
 		undoStack.push(currentHtml);
 		this.undoStacks.set(target, undoStack);
 
-		target.innerHTML = nextHtml;
+		replaceSvgChildrenFromMarkup(target, nextHtml);
 		return true;
 	}
 
@@ -116,7 +155,7 @@ export class SvgHistoryManager {
 		if (!target) return;
 		const initial = this.initialContent.get(target);
 		if (initial != null) {
-			target.innerHTML = initial;
+			replaceSvgChildrenFromMarkup(target, initial);
 		}
 		this.clear(target);
 	}

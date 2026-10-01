@@ -1,7 +1,7 @@
-import { App, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, getLanguage } from "obsidian";
+import { App, MarkdownView, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile, getLanguage } from "obsidian";
 import { asText, cloneCard, commitText, findTextInCard, nudge, readText, resolveCloneTarget, resolveHit, serializeSvg, type TextHit } from "./svgCard";
 import { openTextOverlay, type OverlayHandle } from "./editorOverlay";
-import { ensureMarker, findSvgSpans, matchSpan, spliceSvg } from "./svgSource";
+import { ensureMarker, matchSpan, spliceSvg } from "./svgSource";
 import { SvgHistoryManager } from "./svgHistory";
 import "./styles.css";
 
@@ -18,7 +18,7 @@ const DEFAULT_SETTINGS: A1SvgQuickEditorSettings = {
 
 export function isDiagramSvg(el: Element | null): el is SVGSVGElement {
 	if (!el) return false;
-	const isSvg = (typeof SVGSVGElement !== "undefined" && el instanceof SVGSVGElement) || (el.localName || el.tagName.toLowerCase()).endsWith("svg");
+	const isSvg = (typeof (el as any).instanceOf === "function" ? (el as any).instanceOf(SVGSVGElement) : false) || (el.localName || el.tagName.toLowerCase()).endsWith("svg");
 	if (!isSvg) return false;
 
 	// Ignore toolbar icons, zoom buttons, close buttons, nav actions
@@ -52,9 +52,11 @@ export function isDiagramSvg(el: Element | null): el is SVGSVGElement {
 export function getLocaleStrings() {
 	let lang = "en";
 	try {
-		lang = (getLanguage?.() || window.localStorage?.getItem("language") || (window as any).moment?.locale() || "en").toLowerCase();
-	} catch {}
-	const isZh = lang === "zh" || lang.startsWith("zh-") || lang.startsWith("zh_");
+		lang = (getLanguage() || "en").toLowerCase();
+	} catch {
+		lang = "en";
+	}
+	const isZh = lang.startsWith("zh");
 
 	if (isZh) {
 		return {
@@ -217,7 +219,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 	private matchesObsidianHotkey(evt: KeyboardEvent, hotkey: { modifiers?: string[]; key?: string }): boolean {
 		if (!hotkey || !hotkey.key) return false;
-		const isMac = typeof navigator !== "undefined" && navigator.platform?.toUpperCase().includes("MAC");
+		const isMac = Platform.isMacOS;
 		const mods = (hotkey.modifiers || []).map((m) => m.toLowerCase());
 		const wantsCtrl = mods.includes("ctrl") || mods.includes("control") || (!isMac && mods.includes("mod"));
 		const wantsMeta = mods.includes("meta") || mods.includes("cmd") || mods.includes("command") || (isMac && mods.includes("mod"));
@@ -237,7 +239,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 	private matchesHotkey(evt: KeyboardEvent, hotkeyStr: string): boolean {
 		if (!hotkeyStr || !hotkeyStr.trim()) return false;
-		const isMac = typeof navigator !== "undefined" && navigator.platform?.toUpperCase().includes("MAC");
+		const isMac = Platform.isMacOS;
 		const parts = hotkeyStr.split("+").map((p) => p.trim().toLowerCase());
 		const hasCtrl = parts.includes("ctrl") || parts.includes("control") || (!isMac && parts.includes("mod"));
 		const hasMeta = parts.includes("meta") || parts.includes("cmd") || parts.includes("command") || (isMac && parts.includes("mod"));
@@ -967,23 +969,47 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 		const titleDiv = document.createElement("div");
 		titleDiv.className = "a1-svg-modal-title";
-		titleDiv.innerHTML = `
-			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--interactive-accent, #7c9cff)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">
-				<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-				<circle cx="8.5" cy="8.5" r="1.5"/>
-				<polyline points="21 15 16 10 5 21"/>
-			</svg>
-			<span>${title}</span>
-		`;
+		try {
+			const svgIcon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+			svgIcon.setAttribute("width", "16");
+			svgIcon.setAttribute("height", "16");
+			svgIcon.setAttribute("viewBox", "0 0 24 24");
+			svgIcon.setAttribute("fill", "none");
+			svgIcon.setAttribute("stroke", "var(--interactive-accent, #7c9cff)");
+			svgIcon.setAttribute("stroke-width", "2");
+			svgIcon.setAttribute("stroke-linecap", "round");
+			svgIcon.setAttribute("stroke-linejoin", "round");
+			const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+			rect.setAttribute("x", "3");
+			rect.setAttribute("y", "3");
+			rect.setAttribute("width", "18");
+			rect.setAttribute("height", "18");
+			rect.setAttribute("rx", "2");
+			rect.setAttribute("ry", "2");
+			const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+			circle.setAttribute("cx", "8.5");
+			circle.setAttribute("cy", "8.5");
+			circle.setAttribute("r", "1.5");
+			const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+			polyline.setAttribute("points", "21 15 16 10 5 21");
+			svgIcon.appendChild(rect);
+			svgIcon.appendChild(circle);
+			svgIcon.appendChild(polyline);
+			titleDiv.appendChild(svgIcon);
+		} catch {}
+
+		const titleSpan = document.createElement("span");
+		titleSpan.textContent = title;
+		titleDiv.appendChild(titleSpan);
 
 		const hintsDiv = document.createElement("div");
 		hintsDiv.className = "a1-svg-modal-hints";
-		hintsDiv.innerHTML = `
-			<span class="a1-svg-modal-badge">${i18n.badgeEdit}</span>
-			<span class="a1-svg-modal-badge">${i18n.badgeDelete}</span>
-			<span class="a1-svg-modal-badge">${i18n.badgeClone}</span>
-			<span class="a1-svg-modal-badge">${i18n.badgeUndoRedo}</span>
-		`;
+		for (const badgeText of [i18n.badgeEdit, i18n.badgeDelete, i18n.badgeClone, i18n.badgeUndoRedo]) {
+			const badge = document.createElement("span");
+			badge.className = "a1-svg-modal-badge";
+			badge.textContent = badgeText;
+			hintsDiv.appendChild(badge);
+		}
 
 		titleRow.appendChild(titleDiv);
 		titleRow.appendChild(hintsDiv);
@@ -999,7 +1025,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			openInTabBtn.title = "Open note/file in Obsidian";
 			openInTabBtn.addEventListener("click", (e) => {
 				e.stopPropagation();
-				this.app.workspace.openLinkText(relPath, "", false);
+				void this.app.workspace.openLinkText(relPath, "", false);
 			});
 			actionGroup.appendChild(openInTabBtn);
 		}
@@ -1016,7 +1042,17 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 		const body = document.createElement("div");
 		body.className = "a1-svg-modal-body";
-		body.innerHTML = rawSvgContent;
+
+		try {
+			const parsed = new DOMParser().parseFromString(rawSvgContent, "image/svg+xml");
+			const rootSvg = parsed.documentElement;
+			if (rootSvg) {
+				const adopted = document.adoptNode ? document.adoptNode(rootSvg) : rootSvg;
+				body.appendChild(adopted);
+			}
+		} catch (err) {
+			console.error("Failed to parse modal SVG via DOMParser:", err);
+		}
 
 		const modalSvg = body.querySelector("svg") as SVGSVGElement | null;
 		if (modalSvg) {
@@ -1193,7 +1229,7 @@ class A1SvgQuickEditorSettingTab extends PluginSettingTab {
 			.setDesc(i18n.settingHotkeyDesc)
 			.addText((text) => {
 				text.setValue(this.plugin.settings.openEditorHotkey);
-				text.inputEl.addEventListener("keydown", async (e) => {
+				text.inputEl.addEventListener("keydown", (e) => {
 					if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
 					e.preventDefault();
 					e.stopPropagation();
@@ -1206,8 +1242,10 @@ class A1SvgQuickEditorSettingTab extends PluginSettingTab {
 					const combination = parts.join("+");
 					text.setValue(combination);
 					this.plugin.settings.openEditorHotkey = combination;
-					await this.plugin.saveSettings();
-					new Notice(i18n.settingUpdatedNotice(combination));
+					void (async () => {
+						await this.plugin.saveSettings();
+						new Notice(i18n.settingUpdatedNotice(combination));
+					})();
 				});
 			})
 			.addExtraButton((btn) => {
