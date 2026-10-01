@@ -1,0 +1,10 @@
+{
+  "id": "svg-quick-editor",
+  "name": "SVG Quick Editor",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Quickly edit SVG text chips in place, duplicate on Alt+drag, and delete empty chips in Obsidian.",
+  "author": "Jeff1024",
+  "authorUrl": "https://github.com/2607044640",
+  "isDesktopOnly": false
+}

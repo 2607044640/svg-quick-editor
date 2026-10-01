@@ -1,0 +1,27 @@
+{
+  "name": "svg-quick-editor",
+  "version": "0.1.0",
+  "description": "F2 inline editor for SVG text chips. Empty text deletes the whole chip. Alt+drag duplicates a chip.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production",
+    "test": "vitest run",
+    "check": "svelte-check --tsconfig ./tsconfig.json"
+  },
+  "keywords": ["obsidian", "plugin", "svg"],
+  "author": "Jeff1024",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "esbuild": "^0.20.0",
+    "esbuild-svelte": "^0.8.0",
+    "linkedom": "^0.18.12",
+    "obsidian": "latest",
+    "svelte": "^4.2.0",
+    "svelte-check": "^3.6.0",
+    "svelte-preprocess": "^5.1.0",
+    "typescript": "5.3.3",
+    "vitest": "^2.1.8"
+  }
+}
