@@ -19,7 +19,7 @@ const CHIP = `
 <svg viewBox="0 0 200 40">
   <g id="row" data-a1-card="row">
     <rect x="4" y="4" width="180" height="28" rx="6"></rect>
-    <text id="label" x="12" y="24">AI 2-其他研究</text>
+    <text id="label" x="12" y="24">Category Label</text>
   </g>
 </svg>`;
 
@@ -49,9 +49,9 @@ describe("commitText", () => {
 	it("replaces the sentence", () => {
 		const { svg } = doc(CHIP);
 		const hit = resolveHit(svg.querySelector("text")!)!;
-		const result = commitText(hit, "改一个字");
+		const result = commitText(hit, "Updated text");
 		expect(result.action).toBe("update");
-		expect(svg.querySelector("text")!.textContent).toBe("改一个字");
+		expect(svg.querySelector("text")!.textContent).toBe("Updated text");
 		expect(svg.querySelector("rect")).not.toBeNull();
 	});
 
@@ -157,13 +157,13 @@ describe("cloneCard", () => {
 		card.parentElement!.appendChild(clone);
 		expect(svg.querySelectorAll("g").length).toBe(2);
 		expect(clone.id).not.toBe("row");
-		expect(clone.querySelector("text")!.textContent).toBe("AI 2-其他研究");
+		expect(clone.querySelector("text")!.textContent).toBe("Category Label");
 		expect(clone.getAttribute("transform")).toContain("translate(0 36)");
 		nudge(clone, 0, 4);
 		expect(clone.getAttribute("transform")).toBe("translate(0 40)");
 		expect((clone.getAttribute("transform")!.match(/translate/g) ?? []).length).toBe(1);
 		const xml = serializeSvg(svg);
-		expect(xml).toContain("AI 2-其他研究");
+		expect(xml).toContain("Category Label");
 		expect((xml.match(/id="/g) ?? []).length).toBeGreaterThan(2);
 	});
 });
@@ -198,7 +198,7 @@ describe("findTextInCard", () => {
 	it("resolves text directly from a text node", () => {
 		const { svg } = doc(CHIP);
 		const text = svg.querySelector("text")!;
-		expect(findTextInCard(text)?.textContent).toBe("AI 2-其他研究");
+		expect(findTextInCard(text)?.textContent).toBe("Category Label");
 	});
 
 	it("resolves text when passed a card rect inside the group", () => {
@@ -206,7 +206,7 @@ describe("findTextInCard", () => {
 		const rect = svg.querySelector("rect")!;
 		const text = findTextInCard(rect);
 		expect(text).not.toBeNull();
-		expect(text?.textContent).toBe("AI 2-其他研究");
+		expect(text?.textContent).toBe("Category Label");
 	});
 
 	it("resolves text when passed the card group element", () => {
@@ -214,7 +214,7 @@ describe("findTextInCard", () => {
 		const g = svg.querySelector("g")!;
 		const text = findTextInCard(g);
 		expect(text).not.toBeNull();
-		expect(text?.textContent).toBe("AI 2-其他研究");
+		expect(text?.textContent).toBe("Category Label");
 	});
 
 	it("resolves hit when passed the card rect directly", () => {
@@ -222,7 +222,7 @@ describe("findTextInCard", () => {
 		const rect = svg.querySelector("rect")!;
 		const hit = resolveHit(rect);
 		expect(hit).not.toBeNull();
-		expect(hit?.textEl.textContent).toBe("AI 2-其他研究");
+		expect(hit?.textEl.textContent).toBe("Category Label");
 	});
 
 	it("resolves closest text in a multi-card SVG", () => {
@@ -248,14 +248,14 @@ describe("findTextInCard", () => {
   <svg viewBox="0 0 400 100">
     <g id="card4">
       <rect x="200" y="10" width="100" height="40"></rect>
-      <text x="210" y="30">基石四·神经重塑</text>
+      <text x="210" y="30">Card 4 Sample Text</text>
     </g>
   </svg>
 </div>`);
 		const container = window.document.querySelector(".svg-lightbox-content")!;
 		const text = findTextInCard(container, 250, 30);
 		expect(text).not.toBeNull();
-		expect(text?.textContent).toBe("基石四·神经重塑");
+		expect(text?.textContent).toBe("Card 4 Sample Text");
 	});
 });
 
@@ -266,10 +266,10 @@ describe("resolveCloneTarget", () => {
   <g id="bigCard" transform="translate(40, 92)">
     <rect id="cardBg" width="425" height="116" rx="12"></rect>
     <rect id="badgeRect" x="12" y="12" width="76" height="22"></rect>
-    <text id="badgeText" x="50" y="27">IF 情绪烦躁</text>
-    <text id="subText" x="96" y="27">坐立难安</text>
-    <text id="line1" x="24" y="56">→ 先解决烦躁：玩自己喜欢的游戏</text>
-    <text id="line2" x="24" y="74">→ 防诅咒：不工作</text>
+    <text id="badgeText" x="50" y="27">STATUS_ACTIVE</text>
+    <text id="subText" x="96" y="27">Primary Action</text>
+    <text id="line1" x="24" y="56">-> Execute primary workflow pipeline</text>
+    <text id="line2" x="24" y="74">-> Verify validation gate constraints</text>
   </g>
 </svg>`;
 
