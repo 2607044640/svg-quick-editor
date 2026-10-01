@@ -18,8 +18,9 @@ export interface OverlayOptions {
  * Enter / blur commits. Escape cancels. IME composition is not treated as Enter.
  */
 export function openTextOverlay(parent: HTMLElement, opts: OverlayOptions): OverlayHandle {
-	const input = (typeof (parent as any).createEl === "function")
-		? (parent as any).createEl("input", { type: "text", cls: "a1-svg-edit" })
+	const hasCreateEl = "createEl" in parent && typeof (parent as { createEl?: (tag: string, o?: unknown) => HTMLElement }).createEl === "function";
+	const input = hasCreateEl
+		? (parent as { createEl: (tag: string, o?: unknown) => HTMLElement }).createEl("input", { type: "text", cls: "a1-svg-edit" }) as HTMLInputElement
 		: document.createElement("input");
 	if (input.parentElement !== parent) {
 		input.type = "text";
@@ -29,25 +30,13 @@ export function openTextOverlay(parent: HTMLElement, opts: OverlayOptions): Over
 	input.setAttribute("aria-label", "Edit SVG text");
 	const width = Math.max(opts.rect.width + 24, 80);
 	const height = Math.max(opts.rect.height + 6, 26);
-	if (typeof (input as any).setCssStyles === "function") {
-		(input as any).setCssStyles({
-			left: `${Math.round(opts.rect.left)}px`,
-			top: `${Math.round(opts.rect.top - 2)}px`,
-			width: `${Math.round(width)}px`,
-			height: `${Math.round(height)}px`,
-			fontSize: opts.fontSize || "14px",
-			fontFamily: opts.fontFamily || "inherit",
-			color: opts.color || "inherit",
-		});
-	} else {
-		input.style.left = `${Math.round(opts.rect.left)}px`;
-		input.style.top = `${Math.round(opts.rect.top - 2)}px`;
-		input.style.width = `${Math.round(width)}px`;
-		input.style.height = `${Math.round(height)}px`;
-		input.style.fontSize = opts.fontSize || "14px";
-		input.style.fontFamily = opts.fontFamily || "inherit";
-		input.style.color = opts.color || "inherit";
-	}
+	input.style.left = `${Math.round(opts.rect.left)}px`;
+	input.style.top = `${Math.round(opts.rect.top - 2)}px`;
+	input.style.width = `${Math.round(width)}px`;
+	input.style.height = `${Math.round(height)}px`;
+	input.style.fontSize = opts.fontSize || "14px";
+	input.style.fontFamily = opts.fontFamily || "inherit";
+	input.style.color = opts.color || "inherit";
 
 	let closed = false;
 	let composing = false;

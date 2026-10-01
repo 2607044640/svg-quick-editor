@@ -93,7 +93,8 @@ export function findAdjacentBadgeRect(textEl: Element): Element | null {
  */
 export function resolveCloneTarget(target: Element, clientX?: number, clientY?: number): Element | null {
 	if (!target) return null;
-	const isSvgRoot = (typeof (target as any).instanceOf === "function" ? (target as any).instanceOf(SVGSVGElement) : false) || localName(target) === "svg";
+	const hasInstanceOf = "instanceOf" in target && typeof (target as { instanceOf?: (cls: unknown) => boolean }).instanceOf === "function";
+	const isSvgRoot = (hasInstanceOf ? (target as { instanceOf: (cls: unknown) => boolean }).instanceOf(SVGSVGElement) : false) || localName(target) === "svg";
 	if (isSvgRoot) return null;
 
 	const svg = target.closest("svg");
@@ -297,7 +298,8 @@ export function findTextInCard(start: Element, clientX?: number, clientY?: numbe
 	const direct = asText(start);
 	if (direct) return direct;
 
-	const isSvg = (typeof (start as any).instanceOf === "function" ? (start as any).instanceOf(SVGSVGElement) : false) || localName(start) === "svg";
+	const hasInstanceOf = "instanceOf" in start && typeof (start as { instanceOf?: (cls: unknown) => boolean }).instanceOf === "function";
+	const isSvg = (hasInstanceOf ? (start as { instanceOf: (cls: unknown) => boolean }).instanceOf(SVGSVGElement) : false) || localName(start) === "svg";
 	const svg = isSvg ? start : (start.closest("svg") ?? start.querySelector("svg"));
 	if (!svg) return null;
 
@@ -488,8 +490,9 @@ function rewriteIds(source: Element, clone: Element, stamp: string): void {
 		for (const attr of ["href", "xlink:href", "fill", "stroke", "filter", "clip-path", "mask"]) {
 			const v = el.getAttribute(attr);
 			if (!v) continue;
-			el.setAttribute(attr, v.replace(/url\(#([^)]+)\)|#([A-Za-z_][\w:.-]*)/g, (m, urlId, hashId) => {
+			el.setAttribute(attr, v.replace(/url\(#([^)]+)\)|#([A-Za-z_][\w:.-]*)/g, (m: string, urlId?: string, hashId?: string) => {
 				const id = urlId || hashId;
+				if (!id) return m;
 				const next = map.get(id);
 				if (!next) return m;
 				return urlId ? `url(#${next})` : `#${next}`;

@@ -1,8 +1,8 @@
 {
   "id": "svg-quick-editor",
   "name": "SVG Quick Editor",
-  "version": "0.1.1",
-  "minAppVersion": "1.7.2",
+  "version": "0.1.2",
+  "minAppVersion": "1.8.7",
   "description": "Quickly edit SVG text chips in place, duplicate on Alt+drag, and delete empty chips.",
   "author": "Jeff1024",
   "authorUrl": "https://github.com/2607044640",

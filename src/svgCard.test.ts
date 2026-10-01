@@ -4,6 +4,10 @@ import { cloneCard, commitText, findCard, findTextInCard, nudge, resetCloneSeq, 
 import { ensureMarker, findSvgSpans, matchSpan, spliceSvg } from "./svgSource";
 import { SvgHistoryManager } from "./svgHistory";
 
+if (typeof DOMParser === "undefined") {
+	(globalThis as any).DOMParser = parseHTML("").DOMParser;
+}
+
 function doc(svg: string): { svg: Element; window: { document: Document } } {
 	const { document } = parseHTML(`<!doctype html><body>${svg}</body>`);
 	const el = document.querySelector("svg");

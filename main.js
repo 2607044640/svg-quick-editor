@@ -112,7 +112,8 @@ function findAdjacentBadgeRect(textEl) {
 function resolveCloneTarget(target, clientX, clientY) {
   if (!target)
     return null;
-  const isSvgRoot = (typeof target.instanceOf === "function" ? target.instanceOf(SVGSVGElement) : false) || localName(target) === "svg";
+  const hasInstanceOf = "instanceOf" in target && typeof target.instanceOf === "function";
+  const isSvgRoot = (hasInstanceOf ? target.instanceOf(SVGSVGElement) : false) || localName(target) === "svg";
   if (isSvgRoot)
     return null;
   const svg = target.closest("svg");
@@ -273,7 +274,8 @@ function findTextInCard(start, clientX, clientY) {
   const direct = asText(start);
   if (direct)
     return direct;
-  const isSvg = (typeof start.instanceOf === "function" ? start.instanceOf(SVGSVGElement) : false) || localName(start) === "svg";
+  const hasInstanceOf = "instanceOf" in start && typeof start.instanceOf === "function";
+  const isSvg = (hasInstanceOf ? start.instanceOf(SVGSVGElement) : false) || localName(start) === "svg";
   const svg = isSvg ? start : start.closest("svg") ?? start.querySelector("svg");
   if (!svg)
     return null;
@@ -444,6 +446,8 @@ function rewriteIds(source, clone, stamp) {
         continue;
       el.setAttribute(attr, v.replace(/url\(#([^)]+)\)|#([A-Za-z_][\w:.-]*)/g, (m, urlId, hashId) => {
         const id = urlId || hashId;
+        if (!id)
+          return m;
         const next = map.get(id);
         if (!next)
           return m;
@@ -490,7 +494,8 @@ function serializeSvg(el) {
 
 // src/editorOverlay.ts
 function openTextOverlay(parent, opts) {
-  const input = typeof parent.createEl === "function" ? parent.createEl("input", { type: "text", cls: "a1-svg-edit" }) : document.createElement("input");
+  const hasCreateEl = "createEl" in parent && typeof parent.createEl === "function";
+  const input = hasCreateEl ? parent.createEl("input", { type: "text", cls: "a1-svg-edit" }) : document.createElement("input");
   if (input.parentElement !== parent) {
     input.type = "text";
     input.className = "a1-svg-edit";
@@ -499,25 +504,13 @@ function openTextOverlay(parent, opts) {
   input.setAttribute("aria-label", "Edit SVG text");
   const width = Math.max(opts.rect.width + 24, 80);
   const height = Math.max(opts.rect.height + 6, 26);
-  if (typeof input.setCssStyles === "function") {
-    input.setCssStyles({
-      left: `${Math.round(opts.rect.left)}px`,
-      top: `${Math.round(opts.rect.top - 2)}px`,
-      width: `${Math.round(width)}px`,
-      height: `${Math.round(height)}px`,
-      fontSize: opts.fontSize || "14px",
-      fontFamily: opts.fontFamily || "inherit",
-      color: opts.color || "inherit"
-    });
-  } else {
-    input.style.left = `${Math.round(opts.rect.left)}px`;
-    input.style.top = `${Math.round(opts.rect.top - 2)}px`;
-    input.style.width = `${Math.round(width)}px`;
-    input.style.height = `${Math.round(height)}px`;
-    input.style.fontSize = opts.fontSize || "14px";
-    input.style.fontFamily = opts.fontFamily || "inherit";
-    input.style.color = opts.color || "inherit";
-  }
+  input.style.left = `${Math.round(opts.rect.left)}px`;
+  input.style.top = `${Math.round(opts.rect.top - 2)}px`;
+  input.style.width = `${Math.round(width)}px`;
+  input.style.height = `${Math.round(height)}px`;
+  input.style.fontSize = opts.fontSize || "14px";
+  input.style.fontFamily = opts.fontFamily || "inherit";
+  input.style.color = opts.color || "inherit";
   let closed = false;
   let composing = false;
   const suppressAlt = (e) => {
@@ -624,11 +617,10 @@ function cleanSvgHtml(html) {
 }
 function replaceSvgChildrenFromMarkup(target, markup) {
   const doc = target.ownerDocument || (typeof document !== "undefined" ? document : null);
-  const win = doc?.defaultView || (typeof window !== "undefined" ? window : globalThis);
-  const Parser = win?.DOMParser || (typeof DOMParser !== "undefined" ? DOMParser : null);
-  if (Parser) {
+  const parserConstructor = typeof DOMParser !== "undefined" ? DOMParser : null;
+  if (parserConstructor) {
     try {
-      const parsedDoc = new Parser().parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${markup}</svg>`, "image/svg+xml");
+      const parsedDoc = new parserConstructor().parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${markup}</svg>`, "image/svg+xml");
       const root = parsedDoc.documentElement;
       while (target.firstChild) {
         target.removeChild(target.firstChild);
@@ -637,22 +629,9 @@ function replaceSvgChildrenFromMarkup(target, markup) {
         const node = doc?.adoptNode ? doc.adoptNode(root.firstChild) : root.firstChild;
         target.appendChild(node);
       }
-      return;
     } catch (e) {
       console.error("DOMParser error in replaceSvgChildrenFromMarkup:", e);
     }
-  }
-  try {
-    if (doc && doc.createRange) {
-      const range = doc.createRange();
-      const frag = range.createContextualFragment(markup);
-      while (target.firstChild) {
-        target.removeChild(target.firstChild);
-      }
-      target.appendChild(frag);
-      return;
-    }
-  } catch {
   }
 }
 var SvgHistoryManager = class {
@@ -787,7 +766,8 @@ var DEFAULT_SETTINGS = {
 function isDiagramSvg(el) {
   if (!el)
     return false;
-  const isSvg = (typeof el.instanceOf === "function" ? el.instanceOf(SVGSVGElement) : false) || (el.localName || el.tagName.toLowerCase()).endsWith("svg");
+  const hasInstanceOf = "instanceOf" in el && typeof el.instanceOf === "function";
+  const isSvg = (hasInstanceOf ? el.instanceOf(SVGSVGElement) : false) || (el.localName || el.tagName.toLowerCase()).endsWith("svg");
   if (!isSvg)
     return false;
   if (el.closest("button, .oit-floating-zoom-btn, .clickable-icon, .svg-lightbox-header, .a1-svg-modal-header, .nav-action-button, [class*='overlay'], [class*='toolbar'], .workspace-tab-header, .view-header")) {
@@ -813,7 +793,9 @@ function isDiagramSvg(el) {
 function getLocaleStrings() {
   let lang = "en";
   try {
-    lang = ((0, import_obsidian.getLanguage)() || "en").toLowerCase();
+    if (typeof window !== "undefined" && window.localStorage) {
+      lang = (window.localStorage.getItem("language") || "en").toLowerCase();
+    }
   } catch {
     lang = "en";
   }
@@ -964,7 +946,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     this.activeModal = null;
   }
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() || {});
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -1025,7 +1007,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       return true;
     if (this.matchesHotkey(evt, "Mod+Shift+Alt+I"))
       return true;
-    const hkMgr = this.app?.hotkeyManager;
+    const hkMgr = this.app.hotkeyManager;
     if (hkMgr) {
       const commandIds = [
         "svg-quick-editor:edit-svg-text",
@@ -1158,7 +1140,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     }
     const svgTarget = this.hoveredSvgTarget ?? (elAtPoint ? this.matchSvgElement(elAtPoint) : null) ?? this.findSvgTargetAtPoint(this.lastPointerX, this.lastPointerY) ?? activeModalContainer;
     if (svgTarget) {
-      const isModal = !!svgTarget.closest(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body") || typeof svgTarget.matches === "function" && svgTarget.matches(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body");
+      const isModal = !!svgTarget.closest(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body") || svgTarget.matches && svgTarget.matches(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body");
       if (isModal) {
         const svgEl = svgTarget instanceof SVGSVGElement ? svgTarget : svgTarget.closest("svg") ?? svgTarget.querySelector("svg");
         const fallbackText = svgEl ? findTextInCard(svgEl, this.lastPointerX, this.lastPointerY) : null;
@@ -1370,7 +1352,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
   }
   async beginEdit(textEl) {
     const hit = resolveHit(textEl);
-    const svg = textEl.ownerSVGElement;
+    const svg = textEl.ownerSVGElement ?? textEl.closest("svg");
     if (!hit || !svg)
       return;
     this.overlay?.close();
@@ -1494,7 +1476,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
           decoded = decoded.replace(/\\/g, "/");
           decoded = decoded.replace(/^[a-z]+:\/\/[^/]*\//i, "");
           decoded = decoded.replace(/^\/+/, "");
-          const vaultBasePath = (this.app.vault.adapter?.basePath || "").replace(/\\/g, "/").replace(/^\/+/, "");
+          const vaultBasePath = (this.app.vault.adapter.basePath || "").replace(/\\/g, "/").replace(/^\/+/, "");
           if (vaultBasePath && decoded.toLowerCase().startsWith(vaultBasePath.toLowerCase())) {
             directRelPath = decoded.slice(vaultBasePath.length).replace(/^\/+/, "");
           }

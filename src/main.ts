@@ -1,4 +1,4 @@
-import { App, MarkdownView, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile, getLanguage } from "obsidian";
+import { App, MarkdownView, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile } from "obsidian";
 import { asText, cloneCard, commitText, findTextInCard, nudge, readText, resolveCloneTarget, resolveHit, serializeSvg, type TextHit } from "./svgCard";
 import { openTextOverlay, type OverlayHandle } from "./editorOverlay";
 import { ensureMarker, matchSpan, spliceSvg } from "./svgSource";
@@ -18,7 +18,8 @@ const DEFAULT_SETTINGS: A1SvgQuickEditorSettings = {
 
 export function isDiagramSvg(el: Element | null): el is SVGSVGElement {
 	if (!el) return false;
-	const isSvg = (typeof (el as any).instanceOf === "function" ? (el as any).instanceOf(SVGSVGElement) : false) || (el.localName || el.tagName.toLowerCase()).endsWith("svg");
+	const hasInstanceOf = "instanceOf" in el && typeof (el as { instanceOf?: (cls: unknown) => boolean }).instanceOf === "function";
+	const isSvg = (hasInstanceOf ? (el as { instanceOf: (cls: unknown) => boolean }).instanceOf(SVGSVGElement) : false) || (el.localName || el.tagName.toLowerCase()).endsWith("svg");
 	if (!isSvg) return false;
 
 	// Ignore toolbar icons, zoom buttons, close buttons, nav actions
@@ -52,7 +53,9 @@ export function isDiagramSvg(el: Element | null): el is SVGSVGElement {
 export function getLocaleStrings() {
 	let lang = "en";
 	try {
-		lang = (getLanguage() || "en").toLowerCase();
+		if (typeof window !== "undefined" && window.localStorage) {
+			lang = (window.localStorage.getItem("language") || "en").toLowerCase();
+		}
 	} catch {
 		lang = "en";
 	}
@@ -210,7 +213,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 	}
 
 	async loadSettings(): Promise<void> {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) as Partial<A1SvgQuickEditorSettings> || {});
 	}
 
 	async saveSettings(): Promise<void> {
@@ -268,7 +271,13 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		if (this.matchesHotkey(evt, "Mod+Shift+Alt+I")) return true;
 
 		// 3. Check Obsidian command hotkeys for both edit commands
-		const hkMgr = (this.app as any)?.hotkeyManager;
+		interface HotkeyEntry { modifiers?: string[]; key?: string }
+		interface HotkeyManagerLike {
+			getHotkeys?: (id: string) => HotkeyEntry[] | undefined;
+			customKeys?: Record<string, HotkeyEntry[] | undefined>;
+			defaultKeys?: Record<string, HotkeyEntry[] | undefined>;
+		}
+		const hkMgr = (this.app as unknown as { hotkeyManager?: HotkeyManagerLike }).hotkeyManager;
 		if (hkMgr) {
 			const commandIds = [
 				"svg-quick-editor:edit-svg-text",
@@ -277,7 +286,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 				"a1-svg-quick-editor:open-svg-image-editor"
 			];
 			for (const id of commandIds) {
-				const list: any[] = [
+				const list: HotkeyEntry[] = [
 					...(hkMgr.getHotkeys?.(id) || []),
 					...(hkMgr.customKeys?.[id] || []),
 					...(hkMgr.defaultKeys?.[id] || [])
@@ -428,7 +437,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 		if (svgTarget) {
 			const isModal = !!svgTarget.closest(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body") ||
-				(typeof (svgTarget as any).matches === "function" && (svgTarget as any).matches(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body"));
+				(svgTarget.matches && svgTarget.matches(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body"));
 			if (isModal) {
 				const svgEl = svgTarget instanceof SVGSVGElement ? svgTarget : (svgTarget.closest("svg") ?? svgTarget.querySelector("svg"));
 				const fallbackText = svgEl ? findTextInCard(svgEl, this.lastPointerX, this.lastPointerY) : null;
@@ -561,7 +570,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 	private isInteractiveSvg(el: Element): boolean {
 		const isSvg = (typeof SVGSVGElement !== "undefined" && el instanceof SVGSVGElement) || (el.localName || el.tagName.toLowerCase()).endsWith("svg");
-		const svg = isSvg ? el : (el.ownerSVGElement ?? el.closest("svg") ?? el.querySelector("svg"));
+		const svg = isSvg ? el : ((el as SVGElement).ownerSVGElement ?? el.closest("svg") ?? el.querySelector("svg"));
 		if (!svg) return false;
 		return !!svg.closest(
 			".markdown-preview-view, .markdown-rendered, .view-content, .cm-content, .markdown-source-view, div[class*='block-language'], .internal-embed, .image-embed, .media-embed, .a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body"
@@ -654,7 +663,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 	private async beginEdit(textEl: Element): Promise<void> {
 		const hit = resolveHit(textEl);
-		const svg = textEl.ownerSVGElement;
+		const svg = (textEl as SVGElement).ownerSVGElement ?? (textEl.closest("svg") as SVGSVGElement | null);
 		if (!hit || !svg) return;
 		this.overlay?.close();
 		const rect = textEl.getBoundingClientRect();
@@ -790,7 +799,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 					decoded = decoded.replace(/\\/g, "/");
 					decoded = decoded.replace(/^[a-z]+:\/\/[^/]*\//i, "");
 					decoded = decoded.replace(/^\/+/, "");
-					const vaultBasePath = ((this.app.vault.adapter as any)?.basePath || "").replace(/\\/g, "/").replace(/^\/+/, "");
+					const vaultBasePath = ((this.app.vault.adapter as unknown as { basePath?: string }).basePath || "").replace(/\\/g, "/").replace(/^\/+/, "");
 					if (vaultBasePath && decoded.toLowerCase().startsWith(vaultBasePath.toLowerCase())) {
 						directRelPath = decoded.slice(vaultBasePath.length).replace(/^\/+/, "");
 					}

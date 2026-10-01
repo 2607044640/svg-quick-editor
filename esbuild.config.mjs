@@ -57,6 +57,11 @@ const portalCompliancePlugin = {
 						`[BUILD ERROR in ${filePath}]: Unsafe assignment to innerHTML detected! Use DOMParser or textContent instead.`
 					);
 				}
+				if (/createContextualFragment/g.test(content)) {
+					throw new Error(
+						`[BUILD ERROR in ${filePath}]: createContextualFragment detected! Banned by Obsidian scanner. Use DOMParser instead.`
+					);
+				}
 				if (/\bkeyCode\b/g.test(content)) {
 					throw new Error(
 						`[BUILD ERROR in ${filePath}]: Deprecated KeyboardEvent.keyCode detected! Use e.key or e.code instead.`
