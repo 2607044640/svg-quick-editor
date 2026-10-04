@@ -4,6 +4,7 @@ export function cleanSvgHtml(html: string): string {
 		.replace(/\s*a1-svg-hover-text/g, "")
 		.replace(/\s*a1-svg-hover-image/g, "")
 		.replace(/\s+data-a1-[a-z0-9_-]+(?:="[^"]*")?/g, "")
+		.replace(/<g\b[^>]*\bdata-a1-align="1"[^>]*>[\s\S]*?<\/g>/g, "")
 		.trim();
 }
 

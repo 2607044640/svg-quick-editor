@@ -97,13 +97,15 @@ function findAdjacentBadgeRect(textEl) {
   for (const r of rects) {
     const w = num(r.getAttribute("width")) ?? 0;
     const h = num(r.getAttribute("height")) ?? 0;
-    if (w <= 0 || w > 220 || h <= 0 || h > 65)
-      continue;
     if (w <= 4 || h <= 4)
+      continue;
+    if (w > 420 && h > 85)
+      continue;
+    if (h > 85)
       continue;
     const rx = num(r.getAttribute("x")) ?? 0;
     const ry = num(r.getAttribute("y")) ?? 0;
-    if (tx >= rx - 15 && tx <= rx + w + 15 && ty >= ry && ty <= ry + h + 8) {
+    if (tx >= rx - 20 && tx <= rx + w + 20 && ty >= ry - 5 && ty <= ry + h + 20) {
       return r;
     }
   }
@@ -148,7 +150,8 @@ function resolveCloneTarget(target, clientX, clientY) {
   if (localName(target) === "rect") {
     const w = num(target.getAttribute("width")) ?? 0;
     const h = num(target.getAttribute("height")) ?? 0;
-    const isSmall = w > 0 && w <= 220 && h > 0 && h <= 65 && w > 4 && h > 4;
+    const isDashed = target.hasAttribute("stroke-dasharray");
+    const isSmall = w > 4 && h > 4 && (h <= 85 && w <= 420 || isDashed || w <= 240 && h <= 120);
     if (isSmall) {
       const parentG = target.closest("g");
       if (parentG && parentG !== svg && countTexts(parentG) === 1) {
@@ -158,6 +161,7 @@ function resolveCloneTarget(target, clientX, clientY) {
       if (associatedText && associatedText.parentElement === target.parentElement) {
         return wrapInChipGroup(target, associatedText);
       }
+      return target;
     }
     const cardGroup = target.closest("g");
     if (cardGroup && cardGroup !== svg) {
@@ -466,6 +470,8 @@ function escapeAttr(s) {
   return escapeText(s).replace(/"/g, "&quot;");
 }
 function serializeSvg(el) {
+  if (el.getAttribute("data-a1-align") === "1")
+    return "";
   const name = el.localName || el.tagName;
   const attrs = [];
   for (let i = 0; i < el.attributes.length; i++) {
@@ -490,6 +496,245 @@ function serializeSvg(el) {
       inner += escapeText(node.textContent ?? "");
   }
   return `${open}${inner}</${name}>`;
+}
+function insertCloneSibling(source, clone) {
+  const parent = source.parentElement;
+  if (!parent)
+    return;
+  const next = source.nextSibling;
+  if (next)
+    parent.insertBefore(clone, next);
+  else
+    parent.appendChild(clone);
+}
+function measureBox(el, svg) {
+  if (typeof SVGSVGElement !== "undefined" && svg instanceof SVGSVGElement && typeof el.getBoundingClientRect === "function") {
+    try {
+      const ctm = svg.getScreenCTM();
+      if (ctm) {
+        const inv = ctm.inverse();
+        const r = el.getBoundingClientRect();
+        if (r && (r.width > 0 || r.height > 0)) {
+          const p1 = { x: inv.a * r.left + inv.c * r.top + inv.e, y: inv.b * r.left + inv.d * r.top + inv.f };
+          const p2 = { x: inv.a * r.right + inv.c * r.bottom + inv.e, y: inv.b * r.right + inv.d * r.bottom + inv.f };
+          const left2 = Math.min(p1.x, p2.x);
+          const right2 = Math.max(p1.x, p2.x);
+          const top2 = Math.min(p1.y, p2.y);
+          const bottom2 = Math.max(p1.y, p2.y);
+          if (Number.isFinite(left2) && Number.isFinite(top2) && right2 > left2 && bottom2 > top2) {
+            return { left: left2, right: right2, top: top2, bottom: bottom2 };
+          }
+        }
+      }
+    } catch {
+    }
+  }
+  const rects = localName(el) === "rect" ? [el] : Array.from(el.querySelectorAll("rect"));
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const r of rects) {
+    const x = num(r.getAttribute("x")) ?? 0;
+    const y = num(r.getAttribute("y")) ?? 0;
+    const w = num(r.getAttribute("width"));
+    const h = num(r.getAttribute("height"));
+    if (w == null || h == null || w <= 0 || h <= 0)
+      continue;
+    const origin = ancestorTranslate(r, svg);
+    left = Math.min(left, x + origin.x);
+    top = Math.min(top, y + origin.y);
+    right = Math.max(right, x + origin.x + w);
+    bottom = Math.max(bottom, y + origin.y + h);
+  }
+  if (!Number.isFinite(left)) {
+    const texts = localName(el) === "text" ? [el] : Array.from(el.querySelectorAll("text"));
+    for (const t of texts) {
+      const coords = getCoords(t);
+      if (!coords)
+        continue;
+      const origin = ancestorTranslate(t, svg);
+      const tx = coords.x + origin.x;
+      const ty = coords.y + origin.y;
+      const approxW = Math.max(20, (t.textContent?.length || 5) * 12);
+      const approxH = 16;
+      left = Math.min(left, tx);
+      top = Math.min(top, ty - approxH);
+      right = Math.max(right, tx + approxW);
+      bottom = Math.max(bottom, ty);
+    }
+  }
+  if (!Number.isFinite(left))
+    return null;
+  return { left, right, top, bottom };
+}
+function ancestorTranslate(node, stopAt) {
+  let x = 0;
+  let y = 0;
+  let cur = node;
+  while (cur && cur !== stopAt) {
+    const tr = cur.getAttribute("transform") ?? "";
+    const m = tr.match(/translate\(\s*([-\d.eE+]+)(?:[\s,]+([-\d.eE+]+))?\s*\)/);
+    if (m) {
+      x += parseFloat(m[1]);
+      y += m[2] != null ? parseFloat(m[2]) : 0;
+    }
+    cur = cur.parentElement;
+  }
+  return { x, y };
+}
+function isSmallBox(box, el) {
+  const w = box.right - box.left;
+  const h = box.bottom - box.top;
+  if (el) {
+    if (el.classList?.contains("a1-svg-chip") || el.getAttribute("data-a1-card") === "chip")
+      return true;
+    if (el.hasAttribute("stroke-dasharray"))
+      return true;
+  }
+  if (h <= 70 && w <= 450 && (w > 2 || h > 2))
+    return true;
+  if (w <= 240 && h <= 85)
+    return true;
+  return false;
+}
+function collectAlignTargets(svg, moving) {
+  const targets = [];
+  const seenBoxes = /* @__PURE__ */ new Set();
+  const all = Array.from(svg.querySelectorAll("g, rect, text")).filter((el) => {
+    if (el === moving)
+      return false;
+    if (moving.contains(el))
+      return false;
+    if (el.hasAttribute("data-a1-align") || el.closest("[data-a1-align]"))
+      return false;
+    if (el.getAttribute("display") === "none")
+      return false;
+    const name = localName(el);
+    if (name === "rect") {
+      if (!isCardSizedRect(el, svg))
+        return false;
+      const w = num(el.getAttribute("width")) ?? 0;
+      const h = num(el.getAttribute("height")) ?? 0;
+      if (w <= 1 && h <= 1)
+        return false;
+      return true;
+    }
+    if (name === "text") {
+      const str = (el.textContent || "").trim();
+      if (str.length === 0)
+        return false;
+      const parentG = el.closest("g");
+      if (parentG && parentG !== svg && countTexts(parentG) === 1 && parentG.querySelector("rect")) {
+        return false;
+      }
+      return true;
+    }
+    if (name === "g") {
+      if (el.contains(moving))
+        return false;
+      return countTexts(el) >= 1 || el.querySelector("rect") !== null;
+    }
+    return false;
+  });
+  for (const cand of all) {
+    const box = measureBox(cand, svg);
+    if (!box)
+      continue;
+    if (box.right <= box.left || box.bottom <= box.top)
+      continue;
+    const key = `${Math.round(box.left)}|${Math.round(box.top)}|${Math.round(box.right)}|${Math.round(box.bottom)}`;
+    if (seenBoxes.has(key))
+      continue;
+    seenBoxes.add(key);
+    targets.push(cand);
+  }
+  return targets;
+}
+function snapDelta(moving, svg, opts = {}) {
+  const pxPerMm = opts.pxPerMm && opts.pxPerMm > 0 ? opts.pxPerMm : 3.78;
+  const self = measureBox(moving, svg);
+  if (!self)
+    return { dx: 0, dy: 0, guides: [] };
+  const movingIsSmall = isSmallBox(self, moving, svg);
+  const targetEls = collectAlignTargets(svg, moving);
+  const peers = [];
+  for (const t of targetEls) {
+    const box = measureBox(t, svg);
+    if (!box)
+      continue;
+    peers.push({ el: t, box, isSmall: isSmallBox(box, t, svg) });
+  }
+  const xSnap = bestAxisSnap(self, peers, "x", pxPerMm, movingIsSmall);
+  const ySnap = bestAxisSnap(self, peers, "y", pxPerMm, movingIsSmall);
+  const guides = [];
+  if (xSnap)
+    guides.push({ axis: "x", value: xSnap.guide });
+  if (ySnap)
+    guides.push({ axis: "y", value: ySnap.guide });
+  return {
+    dx: xSnap?.delta ?? 0,
+    dy: ySnap?.delta ?? 0,
+    guides
+  };
+}
+function bestAxisSnap(self, peers, axis, pxPerMm, movingIsSmall) {
+  let best = null;
+  const selfCenter = axis === "x" ? (self.left + self.right) / 2 : (self.top + self.bottom) / 2;
+  for (const peer of peers) {
+    let thresholdMm = 2;
+    let hierarchyRank = 1;
+    if (movingIsSmall) {
+      if (peer.isSmall) {
+        thresholdMm = 5;
+        hierarchyRank = 0;
+      } else {
+        thresholdMm = 2;
+        hierarchyRank = 1;
+      }
+    } else {
+      if (peer.isSmall) {
+        continue;
+      }
+      thresholdMm = 2;
+      hierarchyRank = 0;
+    }
+    const thresholdPx = thresholdMm * pxPerMm;
+    const peerCenter = axis === "x" ? (peer.box.left + peer.box.right) / 2 : (peer.box.top + peer.box.bottom) / 2;
+    const pairs = axis === "x" ? [
+      { sPt: self.left, pPt: peer.box.left, typeRank: 0 },
+      // Left to Left (HIGHEST PRIORITY)
+      { sPt: self.right, pPt: peer.box.right, typeRank: 0 },
+      // Right to Right
+      { sPt: selfCenter, pPt: peerCenter, typeRank: 1 },
+      // Center to Center
+      { sPt: self.left, pPt: peer.box.right, typeRank: 2 },
+      // Left to Right (abut)
+      { sPt: self.right, pPt: peer.box.left, typeRank: 2 }
+      // Right to Left (abut)
+    ] : [
+      { sPt: self.top, pPt: peer.box.top, typeRank: 0 },
+      // Top to Top (HIGHEST PRIORITY)
+      { sPt: self.bottom, pPt: peer.box.bottom, typeRank: 0 },
+      // Bottom to Bottom
+      { sPt: selfCenter, pPt: peerCenter, typeRank: 1 },
+      // Center to Center
+      { sPt: self.top, pPt: peer.box.bottom, typeRank: 2 },
+      // Top to Bottom (abut)
+      { sPt: self.bottom, pPt: peer.box.top, typeRank: 2 }
+      // Bottom to Top (abut)
+    ];
+    for (const { sPt, pPt, typeRank } of pairs) {
+      const delta = pPt - sPt;
+      const abs = Math.abs(delta);
+      if (abs <= thresholdPx + 1e-4) {
+        if (!best || hierarchyRank < best.hierarchyRank || hierarchyRank === best.hierarchyRank && typeRank < best.typeRank || hierarchyRank === best.hierarchyRank && typeRank === best.typeRank && abs < best.abs - 1e-4) {
+          best = { abs, delta, guide: pPt, hierarchyRank, typeRank };
+        }
+      }
+    }
+  }
+  return best ? { delta: best.delta, guide: best.guide } : null;
 }
 
 // src/editorOverlay.ts
@@ -613,7 +858,7 @@ function ensureMarker(svgMarkup, marker) {
 
 // src/svgHistory.ts
 function cleanSvgHtml(html) {
-  return html.replace(/\s*class="[^"]*a1-svg-hover-[^"]*"/g, "").replace(/\s*a1-svg-hover-text/g, "").replace(/\s*a1-svg-hover-image/g, "").replace(/\s+data-a1-[a-z0-9_-]+(?:="[^"]*")?/g, "").trim();
+  return html.replace(/\s*class="[^"]*a1-svg-hover-[^"]*"/g, "").replace(/\s*a1-svg-hover-text/g, "").replace(/\s*a1-svg-hover-image/g, "").replace(/\s+data-a1-[a-z0-9_-]+(?:="[^"]*")?/g, "").replace(/<g\b[^>]*\bdata-a1-align="1"[^>]*>[\s\S]*?<\/g>/g, "").trim();
 }
 function replaceSvgChildrenFromMarkup(target, markup) {
   const doc = target.ownerDocument || (typeof document !== "undefined" ? document : null);
@@ -809,6 +1054,8 @@ function getLocaleStrings() {
       badgeMove: "Shift + \u62D6\u62FD\u79FB\u52A8UI\u6846",
       badgeClone: "Alt + \u62D6\u62FD\u590D\u5236UI\u6846",
       badgeUndoRedo: "Ctrl+Z/Y \u64A4\u9500\u91CD\u505A",
+      btnAutoAlign: "Auto Align",
+      btnAutoAlignTip: "\u62D6\u52A8\u65F6\uFF0C\u5728\u5F88\u5C0F\u7684\u8303\u56F4\u5185\u81EA\u52A8\u5BF9\u9F50\u4E0A\u4E0B\u5DE6\u53F3\u3002\u5C0F\u6846\u7EA6 5mm\uFF0C\u5927\u6846\u7EA6 2mm\u3002",
       badgeAutoSave: "\u9000\u51FA\u786E\u8BA4\u4FDD\u5B58",
       closeTooltip: "\u5173\u95ED (Esc)",
       noticeSaved: (name) => `SVG \u5DF2\u4FDD\u5B58: ${name}`,
@@ -839,6 +1086,8 @@ function getLocaleStrings() {
     badgeMove: "Shift + Drag to Move",
     badgeClone: "Alt + Drag to Duplicate",
     badgeUndoRedo: "Ctrl+Z/Y Undo/Redo",
+    btnAutoAlign: "Auto Align",
+    btnAutoAlignTip: "While dragging, lock edges and centers that come within a few millimetres. Small boxes ~5mm, large cards ~2mm.",
     badgeAutoSave: "Save on Exit",
     closeTooltip: "Close (Esc)",
     noticeSaved: (name) => `SVG saved: ${name}`,
@@ -872,7 +1121,22 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     this.lastPointerX = 0;
     this.lastPointerY = 0;
     this.dragging = null;
+    this.autoAlign = true;
     this.activeModal = null;
+  }
+  getAutoAlign() {
+    return this.autoAlign;
+  }
+  setAutoAlign(enabled) {
+    this.autoAlign = enabled;
+    if (!enabled && this.dragging) {
+      if (this.dragging.snapOffsetUserX !== 0 || this.dragging.snapOffsetUserY !== 0) {
+        nudge(this.dragging.card, -this.dragging.snapOffsetUserX, -this.dragging.snapOffsetUserY);
+        this.dragging.snapOffsetUserX = 0;
+        this.dragging.snapOffsetUserY = 0;
+      }
+      this.clearAlignGuides(this.dragging.svg);
+    }
   }
   async onload() {
     window.a1SvgQuickEditor = this;
@@ -1194,7 +1458,19 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
         this.dragging.moved = true;
         this.dragging.lastX = evt.clientX;
         this.dragging.lastY = evt.clientY;
+        if (this.dragging.snapOffsetUserX !== 0 || this.dragging.snapOffsetUserY !== 0) {
+          nudge(this.dragging.card, -this.dragging.snapOffsetUserX, -this.dragging.snapOffsetUserY);
+          this.dragging.snapOffsetUserX = 0;
+          this.dragging.snapOffsetUserY = 0;
+        }
         this.translate(this.dragging.card, this.dragging.svg, dx, dy);
+        if (this.autoAlign) {
+          const snap = this.applySnap(this.dragging.card, this.dragging.svg);
+          this.dragging.snapOffsetUserX = snap.dx;
+          this.dragging.snapOffsetUserY = snap.dy;
+        } else {
+          this.clearAlignGuides(this.dragging.svg);
+        }
       }
       return;
     }
@@ -1236,12 +1512,14 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
         lastX: evt.clientX,
         lastY: evt.clientY,
         moved: false,
-        mode: "move"
+        mode: "move",
+        snapOffsetUserX: 0,
+        snapOffsetUserY: 0
       };
     } else {
       this.history.recordSnapshot(svg);
       const clone = cloneCard(dragTarget, 12, 12);
-      dragTarget.parentElement?.appendChild(clone);
+      insertCloneSibling(dragTarget, clone);
       document.body.style.cursor = "copy";
       this.dragging = {
         card: clone,
@@ -1250,7 +1528,9 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
         lastX: evt.clientX,
         lastY: evt.clientY,
         moved: true,
-        mode: "clone"
+        mode: "clone",
+        snapOffsetUserX: 0,
+        snapOffsetUserY: 0
       };
     }
   }
@@ -1259,6 +1539,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       return;
     const svg = this.dragging.svg;
     const moved = this.dragging.moved;
+    this.clearAlignGuides(svg);
     this.dragging = null;
     document.body.style.cursor = "";
     if (!moved)
@@ -1410,6 +1691,47 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       return;
     const inv = ctm.inverse();
     nudge(card, inv.a * dx + inv.c * dy, inv.b * dx + inv.d * dy);
+  }
+  applySnap(card, svg) {
+    const ctm = svg.getScreenCTM();
+    const pxPerUser = ctm ? Math.hypot(ctm.a, ctm.b) : 1;
+    const pxPerMm = pxPerUser > 0 ? 96 / 25.4 / pxPerUser : 3.78;
+    const snap = snapDelta(card, svg, { pxPerMm });
+    if (snap.dx !== 0 || snap.dy !== 0)
+      nudge(card, snap.dx, snap.dy);
+    this.paintAlignGuides(svg, snap.guides);
+    return { dx: snap.dx, dy: snap.dy };
+  }
+  paintAlignGuides(svg, guides) {
+    this.clearAlignGuides(svg);
+    if (guides.length === 0)
+      return;
+    const doc = svg.ownerDocument;
+    const layer = doc.createElementNS("http://www.w3.org/2000/svg", "g");
+    layer.setAttribute("data-a1-align", "1");
+    layer.setAttribute("pointer-events", "none");
+    const vb = (svg.getAttribute("viewBox") || svg.getAttribute("viewbox") || "").trim().split(/[\s,]+/);
+    const span = vb.length === 4 ? { x: parseFloat(vb[0]), y: parseFloat(vb[1]), w: parseFloat(vb[2]), h: parseFloat(vb[3]) } : { x: 0, y: 0, w: parseFloat(svg.getAttribute("width") || "1000"), h: parseFloat(svg.getAttribute("height") || "1000") };
+    for (const g of guides) {
+      const line = doc.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("class", "a1-svg-align-guide");
+      if (g.axis === "x") {
+        line.setAttribute("x1", String(g.value));
+        line.setAttribute("x2", String(g.value));
+        line.setAttribute("y1", String(span.y));
+        line.setAttribute("y2", String(span.y + span.h));
+      } else {
+        line.setAttribute("y1", String(g.value));
+        line.setAttribute("y2", String(g.value));
+        line.setAttribute("x1", String(span.x));
+        line.setAttribute("x2", String(span.x + span.w));
+      }
+      layer.appendChild(line);
+    }
+    svg.appendChild(layer);
+  }
+  clearAlignGuides(svg) {
+    svg.querySelector("[data-a1-align]")?.remove();
   }
   /**
    * Persists SVG changes.
@@ -1702,6 +2024,21 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     titleRow.appendChild(hintsDiv);
     const actionGroup = document.createElement("div");
     actionGroup.className = "a1-svg-modal-actions";
+    const alignBtn = document.createElement("button");
+    alignBtn.type = "button";
+    alignBtn.className = "a1-svg-modal-tab-btn is-on";
+    alignBtn.textContent = i18n.btnAutoAlign;
+    alignBtn.title = i18n.btnAutoAlignTip;
+    alignBtn.setAttribute("aria-pressed", "true");
+    alignBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.autoAlign = !this.autoAlign;
+      alignBtn.classList.toggle("is-on", this.autoAlign);
+      alignBtn.setAttribute("aria-pressed", this.autoAlign ? "true" : "false");
+      if (!this.autoAlign && modalSvg)
+        this.clearAlignGuides(modalSvg);
+    });
+    actionGroup.appendChild(alignBtn);
     if (relPath) {
       const openInTabBtn = document.createElement("button");
       openInTabBtn.type = "button";

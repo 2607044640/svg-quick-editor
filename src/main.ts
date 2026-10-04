@@ -1,5 +1,5 @@
 import { App, MarkdownView, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile } from "obsidian";
-import { asText, cloneCard, commitText, findTextInCard, nudge, readText, resolveCloneTarget, resolveHit, serializeSvg, type TextHit } from "./svgCard";
+import { asText, cloneCard, commitText, findTextInCard, insertCloneSibling, nudge, readText, resolveCloneTarget, resolveHit, serializeSvg, snapDelta, type AlignGuide, type TextHit } from "./svgCard";
 import { openTextOverlay, type OverlayHandle } from "./editorOverlay";
 import { ensureMarker, matchSpan, spliceSvg } from "./svgSource";
 import { SvgHistoryManager } from "./svgHistory";
@@ -70,6 +70,8 @@ export function getLocaleStrings() {
 			badgeMove: "Shift + 拖拽移动UI框",
 			badgeClone: "Alt + 拖拽复制UI框",
 			badgeUndoRedo: "Ctrl+Z/Y 撤销重做",
+			btnAutoAlign: "Auto Align",
+			btnAutoAlignTip: "拖动时，在很小的范围内自动对齐上下左右。小框约 5mm，大框约 2mm。",
 			badgeAutoSave: "退出确认保存",
 			closeTooltip: "关闭 (Esc)",
 			noticeSaved: (name: string) => `SVG 已保存: ${name}`,
@@ -101,6 +103,8 @@ export function getLocaleStrings() {
 		badgeMove: "Shift + Drag to Move",
 		badgeClone: "Alt + Drag to Duplicate",
 		badgeUndoRedo: "Ctrl+Z/Y Undo/Redo",
+		btnAutoAlign: "Auto Align",
+		btnAutoAlignTip: "While dragging, lock edges and centers that come within a few millimetres. Small boxes ~5mm, large cards ~2mm.",
 		badgeAutoSave: "Save on Exit",
 		closeTooltip: "Close (Esc)",
 		noticeSaved: (name: string) => `SVG saved: ${name}`,
@@ -132,8 +136,35 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 	private hoveredSvgTarget: Element | null = null;
 	private lastPointerX = 0;
 	private lastPointerY = 0;
-	private dragging: { card: Element; svg: SVGSVGElement; pointerId: number; lastX: number; lastY: number; moved: boolean; mode: "move" | "clone" } | null = null;
+	private dragging: {
+		card: Element;
+		svg: SVGSVGElement;
+		pointerId: number;
+		lastX: number;
+		lastY: number;
+		moved: boolean;
+		mode: "move" | "clone";
+		snapOffsetUserX: number;
+		snapOffsetUserY: number;
+	} | null = null;
+	private autoAlign = true;
 	private activeModal: HTMLElement | null = null;
+
+	public getAutoAlign(): boolean {
+		return this.autoAlign;
+	}
+
+	public setAutoAlign(enabled: boolean): void {
+		this.autoAlign = enabled;
+		if (!enabled && this.dragging) {
+			if (this.dragging.snapOffsetUserX !== 0 || this.dragging.snapOffsetUserY !== 0) {
+				nudge(this.dragging.card, -this.dragging.snapOffsetUserX, -this.dragging.snapOffsetUserY);
+				this.dragging.snapOffsetUserX = 0;
+				this.dragging.snapOffsetUserY = 0;
+			}
+			this.clearAlignGuides(this.dragging.svg);
+		}
+	}
 
 	async onload(): Promise<void> {
 		(window as any).a1SvgQuickEditor = this;
@@ -493,7 +524,25 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 				this.dragging.moved = true;
 				this.dragging.lastX = evt.clientX;
 				this.dragging.lastY = evt.clientY;
+
+				// 1. Remove previous frame snap offset to restore true pointer-following position
+				if (this.dragging.snapOffsetUserX !== 0 || this.dragging.snapOffsetUserY !== 0) {
+					nudge(this.dragging.card, -this.dragging.snapOffsetUserX, -this.dragging.snapOffsetUserY);
+					this.dragging.snapOffsetUserX = 0;
+					this.dragging.snapOffsetUserY = 0;
+				}
+
+				// 2. Translate card by mouse delta
 				this.translate(this.dragging.card, this.dragging.svg, dx, dy);
+
+				// 3. Compute and apply magnetic snap if autoAlign is active
+				if (this.autoAlign) {
+					const snap = this.applySnap(this.dragging.card, this.dragging.svg);
+					this.dragging.snapOffsetUserX = snap.dx;
+					this.dragging.snapOffsetUserY = snap.dy;
+				} else {
+					this.clearAlignGuides(this.dragging.svg);
+				}
 			}
 			return;
 		}
@@ -539,12 +588,14 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 				lastY: evt.clientY,
 				moved: false,
 				mode: "move",
+				snapOffsetUserX: 0,
+				snapOffsetUserY: 0,
 			};
 		} else {
 			// Mode: Duplicate UI box (Alt+drag)
 			this.history.recordSnapshot(svg);
 			const clone = cloneCard(dragTarget, 12, 12);
-			dragTarget.parentElement?.appendChild(clone);
+			insertCloneSibling(dragTarget, clone);
 			document.body.style.cursor = "copy";
 			this.dragging = {
 				card: clone,
@@ -554,6 +605,8 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 				lastY: evt.clientY,
 				moved: true,
 				mode: "clone",
+				snapOffsetUserX: 0,
+				snapOffsetUserY: 0,
 			};
 		}
 	}
@@ -562,6 +615,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		if (!this.dragging || evt.pointerId !== this.dragging.pointerId) return;
 		const svg = this.dragging.svg;
 		const moved = this.dragging.moved;
+		this.clearAlignGuides(svg);
 		this.dragging = null;
 		document.body.style.cursor = "";
 
@@ -719,6 +773,50 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		if (!ctm) return;
 		const inv = ctm.inverse();
 		nudge(card, inv.a * dx + inv.c * dy, inv.b * dx + inv.d * dy);
+	}
+
+	private applySnap(card: Element, svg: SVGSVGElement): { dx: number; dy: number } {
+		const ctm = svg.getScreenCTM();
+		const pxPerUser = ctm ? Math.hypot(ctm.a, ctm.b) : 1;
+		const pxPerMm = pxPerUser > 0 ? (96 / 25.4) / pxPerUser : 3.78;
+		const snap = snapDelta(card, svg, { pxPerMm });
+		if (snap.dx !== 0 || snap.dy !== 0) nudge(card, snap.dx, snap.dy);
+		this.paintAlignGuides(svg, snap.guides);
+		return { dx: snap.dx, dy: snap.dy };
+	}
+
+	private paintAlignGuides(svg: SVGSVGElement, guides: AlignGuide[]): void {
+		this.clearAlignGuides(svg);
+		if (guides.length === 0) return;
+		const doc = svg.ownerDocument;
+		const layer = doc.createElementNS("http://www.w3.org/2000/svg", "g");
+		layer.setAttribute("data-a1-align", "1");
+		layer.setAttribute("pointer-events", "none");
+		const vb = (svg.getAttribute("viewBox") || svg.getAttribute("viewbox") || "").trim().split(/[\s,]+/);
+		const span = vb.length === 4
+			? { x: parseFloat(vb[0]), y: parseFloat(vb[1]), w: parseFloat(vb[2]), h: parseFloat(vb[3]) }
+			: { x: 0, y: 0, w: parseFloat(svg.getAttribute("width") || "1000"), h: parseFloat(svg.getAttribute("height") || "1000") };
+		for (const g of guides) {
+			const line = doc.createElementNS("http://www.w3.org/2000/svg", "line");
+			line.setAttribute("class", "a1-svg-align-guide");
+			if (g.axis === "x") {
+				line.setAttribute("x1", String(g.value));
+				line.setAttribute("x2", String(g.value));
+				line.setAttribute("y1", String(span.y));
+				line.setAttribute("y2", String(span.y + span.h));
+			} else {
+				line.setAttribute("y1", String(g.value));
+				line.setAttribute("y2", String(g.value));
+				line.setAttribute("x1", String(span.x));
+				line.setAttribute("x2", String(span.x + span.w));
+			}
+			layer.appendChild(line);
+		}
+		svg.appendChild(layer);
+	}
+
+	private clearAlignGuides(svg: Element): void {
+		svg.querySelector("[data-a1-align]")?.remove();
 	}
 
 	/**
@@ -1050,6 +1148,21 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 		const actionGroup = document.createElement("div");
 		actionGroup.className = "a1-svg-modal-actions";
+
+		const alignBtn = document.createElement("button");
+		alignBtn.type = "button";
+		alignBtn.className = "a1-svg-modal-tab-btn is-on";
+		alignBtn.textContent = i18n.btnAutoAlign;
+		alignBtn.title = i18n.btnAutoAlignTip;
+		alignBtn.setAttribute("aria-pressed", "true");
+		alignBtn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			this.autoAlign = !this.autoAlign;
+			alignBtn.classList.toggle("is-on", this.autoAlign);
+			alignBtn.setAttribute("aria-pressed", this.autoAlign ? "true" : "false");
+			if (!this.autoAlign && modalSvg) this.clearAlignGuides(modalSvg);
+		});
+		actionGroup.appendChild(alignBtn);
 
 		if (relPath) {
 			const openInTabBtn = document.createElement("button");

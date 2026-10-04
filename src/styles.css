@@ -135,6 +135,20 @@ svg.a1-svg-hover-image,
 	border-color: var(--interactive-accent, #7c9cff);
 }
 
+.a1-svg-modal-tab-btn.is-on {
+	background: color-mix(in srgb, var(--interactive-accent, #7c9cff) 24%, transparent);
+	border-color: var(--interactive-accent, #7c9cff);
+	color: var(--text-normal, #ffffff);
+}
+
+.a1-svg-align-guide {
+	stroke: var(--interactive-accent, #7c9cff);
+	stroke-width: 1;
+	stroke-dasharray: 4 3;
+	vector-effect: non-scaling-stroke;
+	pointer-events: none;
+}
+
 .a1-svg-modal-close {
 	cursor: pointer;
 	padding: 4px 10px;

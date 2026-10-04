@@ -1,6 +1,6 @@
 import { parseHTML } from "linkedom";
 import { describe, expect, it } from "vitest";
-import { cloneCard, commitText, findCard, findTextInCard, nudge, resetCloneSeq, resolveCloneTarget, resolveHit, serializeSvg } from "./svgCard";
+import { cloneCard, collectAlignTargets, commitText, findCard, findTextInCard, insertCloneSibling, nudge, resetCloneSeq, resolveCloneTarget, resolveHit, serializeSvg, snapDelta } from "./svgCard";
 import { ensureMarker, findSvgSpans, matchSpan, spliceSvg } from "./svgSource";
 import { SvgHistoryManager } from "./svgHistory";
 
@@ -164,6 +164,10 @@ describe("cloneCard", () => {
 		expect((clone.getAttribute("transform")!.match(/translate/g) ?? []).length).toBe(1);
 		const xml = serializeSvg(svg);
 		expect(xml).toContain("Category Label");
+		const guide = svg.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "g");
+		guide.setAttribute("data-a1-align", "1");
+		svg.appendChild(guide);
+		expect(serializeSvg(svg)).not.toContain("data-a1-align");
 		expect((xml.match(/id="/g) ?? []).length).toBeGreaterThan(2);
 	});
 });
@@ -461,5 +465,153 @@ describe("nudge and element move (Shift+drag)", () => {
 	});
 });
 
+const BOARD = `
+<svg viewBox="0 0 400 300">
+  <g id="big-a">
+    <rect x="10" y="10" width="160" height="100"></rect>
+    <g id="chip-a">
+      <rect x="20" y="20" width="40" height="16"></rect>
+      <text x="24" y="32">A</text>
+    </g>
+  </g>
+  <g id="big-b">
+    <rect x="200" y="40" width="160" height="100"></rect>
+    <g id="chip-b">
+      <rect x="210" y="50" width="40" height="16"></rect>
+      <text x="214" y="62">B</text>
+    </g>
+  </g>
+</svg>`;
 
+describe("snapDelta", () => {
+	it("snaps a small chip to a peer chip within ~5mm and ignores the nested outer card", () => {
+		const { svg } = doc(BOARD);
+		const chip = svg.querySelector("#chip-a")!;
+		// Move chip so its left edge is 4 user-units left of chip-b (210).
+		nudge(chip, 186, 30);
+		const snap = snapDelta(chip, svg, { pxPerMm: 3.78 });
+		expect(snap.dx).toBe(4);
+		expect(snap.dy).toBe(0);
+		expect(snap.guides.some((g) => g.axis === "x" && g.value === 210)).toBe(true);
+	});
+
+	it("does not snap a large card across a 4-unit gap (tighter ~2mm band)", () => {
+		const { svg } = doc(BOARD);
+		const big = svg.querySelector("#big-a")!;
+		nudge(big, 20, 0);
+		const snap = snapDelta(big, svg, { pxPerMm: 3.78 });
+		expect(snap.dx).toBe(0);
+		expect(snap.dy).toBe(0);
+	});
+
+	it("snaps a large card when the gap is inside ~2mm", () => {
+		const { svg } = doc(BOARD);
+		const big = svg.querySelector("#big-a")!;
+		nudge(big, 23, 30);
+		const snap = snapDelta(big, svg, { pxPerMm: 3.78 });
+		expect(snap.dx).toBe(7);
+		expect(snap.dy).toBe(0);
+	});
+
+	it("prioritizes small-to-small 5mm threshold over small-to-large 2mm threshold", () => {
+		const { svg } = doc(`
+<svg viewBox="0 0 500 500">
+  <g id="big-card">
+    <rect x="100" y="100" width="300" height="200"></rect>
+  </g>
+  <g id="peer-chip">
+    <rect x="100" y="120" width="80" height="30"></rect>
+    <text x="110" y="140">Peer</text>
+  </g>
+  <g id="moving-chip">
+    <rect x="85" y="120" width="80" height="30"></rect>
+    <text x="95" y="140">Moving</text>
+  </g>
+</svg>`);
+		const moving = svg.querySelector("#moving-chip")!;
+		// Delta to align left edges (100 - 85 = 15 px).
+		// 15 px is ~3.96 mm. For small-to-small (5mm * 3.78 = 18.9px), 15 px snaps!
+		// For small-to-large (2mm * 3.78 = 7.56px), 15 px would NOT snap.
+		const snap = snapDelta(moving, svg, { pxPerMm: 3.78 });
+		expect(snap.dx).toBe(15);
+		expect(snap.guides.some((g) => g.axis === "x" && g.value === 100)).toBe(true);
+	});
+
+	it("deduplicates identical nested frames and does not calculate them twice", () => {
+		const { svg } = doc(`
+<svg viewBox="0 0 500 500">
+  <g id="outer-wrap">
+    <g id="inner-wrap">
+      <rect x="50" y="50" width="100" height="50"></rect>
+    </g>
+  </g>
+  <g id="moving">
+    <rect x="48" y="50" width="100" height="50"></rect>
+  </g>
+</svg>`);
+		const moving = svg.querySelector("#moving")!;
+		const targets = collectAlignTargets(svg, moving);
+		expect(targets.length).toBe(1);
+		const snap = snapDelta(moving, svg, { pxPerMm: 3.78 });
+		expect(snap.dx).toBe(2);
+		expect(snap.dy).toBe(0);
+	});
+
+	it("strictly prioritizes same-edge Left-to-Left alignment over Center-to-Center even when Center is closer", () => {
+		const { svg } = doc(`
+<svg viewBox="0 0 600 400">
+  <g id="peer">
+    <rect x="100" y="50" width="120" height="80"></rect>
+  </g>
+  <g id="moving">
+    <!-- Width 100. Center is at 104 + 50 = 154. Peer center is at 100 + 60 = 160. Gap in center = 6px.
+         Left edge is at 104. Peer left is 100. Gap in left = 4px.
+         If Left has gap 4px and Center has gap 2px (e.g. moving at 108: center 158, peer 160 -> gap 2px; left 108, peer 100 -> gap 8px).
+         With 2mm * 3.78 = 7.56px threshold, left is at 106 (gap 6px) and center is at 156 (gap 4px: closer!).
+         Left-to-Left MUST WIN because of same-edge priority typeRank 0 vs 1! -->
+    <rect x="106" y="160" width="100" height="80"></rect>
+  </g>
+</svg>`);
+		const moving = svg.querySelector("#moving")!;
+		const snap = snapDelta(moving, svg, { pxPerMm: 3.78 });
+		// Left delta: 100 - 106 = -6.
+		// Center delta: 160 - 156 = +4 (closer!).
+		// But Left-to-Left has typeRank 0 and MUST defeat center!
+		expect(snap.dx).toBe(-6);
+		expect(snap.guides.some((g) => g.axis === "x" && g.value === 100)).toBe(true);
+	});
+
+	it("aligns left edges of stacked cards matching the user decision flow SVG structure", () => {
+		const { svg } = doc(`
+<svg viewBox="0 0 960 500">
+  <g id="card-1" transform="translate(40, 92)">
+    <rect width="425" height="116" rx="12"></rect>
+    <rect x="12" y="12" width="76" height="22" rx="6"></rect>
+    <text x="50" y="27">IF 情绪烦躁</text>
+  </g>
+  <g id="card-2" transform="translate(44, 224)">
+    <rect width="425" height="116" rx="12"></rect>
+    <rect x="12" y="12" width="76" height="22" rx="6"></rect>
+    <text x="50" y="27">IF 思维卡壳</text>
+  </g>
+</svg>`);
+		const card2 = svg.querySelector("#card-2")!;
+		const snap = snapDelta(card2, svg, { pxPerMm: 3.78 });
+		// Card 1 left is 40. Card 2 left is 44. Delta = -4.
+		expect(snap.dx).toBe(-4);
+		expect(snap.guides.some((g) => g.axis === "x" && g.value === 40)).toBe(true);
+	});
+});
+
+describe("insertCloneSibling", () => {
+	it("places the clone as the next sibling, not at the end of a later child list", () => {
+		const { svg } = doc(BOARD);
+		const chip = svg.querySelector("#chip-a")!;
+		const clone = cloneCard(chip, 12, 12);
+		insertCloneSibling(chip, clone);
+		expect(clone.parentElement).toBe(chip.parentElement);
+		expect(clone.previousElementSibling).toBe(chip);
+		expect(chip.parentElement!.children[2].id).toBe(clone.id);
+	});
+});
 
