@@ -381,5 +381,85 @@ describe("SvgHistoryManager", () => {
 	});
 });
 
+describe("nudge and element move (Shift+drag)", () => {
+	it("translates a <g> with existing translate transform", () => {
+		const { svg } = doc(`<svg><g id="card" transform="translate(40, 92)"><rect width="100" height="50"/></g></svg>`);
+		const g = svg.querySelector("#card")!;
+		nudge(g, 15, 25);
+		expect(g.getAttribute("transform")).toBe("translate(55 117)");
+	});
+
+	it("translates a <g> without previous transform", () => {
+		const { svg } = doc(`<svg><g id="card"><rect width="100" height="50"/></g></svg>`);
+		const g = svg.querySelector("#card")!;
+		nudge(g, 10, -5);
+		expect(g.getAttribute("transform")).toBe("translate(10 -5)");
+	});
+
+	it("translates a <rect> directly by updating x and y", () => {
+		const { svg } = doc(`<svg><rect id="r" x="20" y="30" width="100" height="50"/></svg>`);
+		const r = svg.querySelector("#r")!;
+		nudge(r, 12, 18);
+		expect(r.getAttribute("x")).toBe("32");
+		expect(r.getAttribute("y")).toBe("48");
+	});
+
+	it("translates a <text> and its nested tspans", () => {
+		const { svg } = doc(`<svg><text id="t" x="10" y="20"><tspan x="10" y="20">Hello</tspan></text></svg>`);
+		const t = svg.querySelector("#t")!;
+		nudge(t, 5, 10);
+		expect(t.getAttribute("x")).toBe("15");
+		expect(t.getAttribute("y")).toBe("30");
+		const tspan = t.querySelector("tspan")!;
+		expect(tspan.getAttribute("x")).toBe("15");
+		expect(tspan.getAttribute("y")).toBe("30");
+	});
+
+	it("translates path, polygon, polyline via transform", () => {
+		const { svg } = doc(`<svg><path id="p" d="M0 0 L10 10"/></svg>`);
+		const p = svg.querySelector("#p")!;
+		nudge(p, 8, 12);
+		expect(p.getAttribute("transform")).toBe("translate(8 12)");
+	});
+
+	it("integrates moving a resolved clone/move target with history undo/redo", () => {
+		const { svg } = doc(`
+<svg viewBox="0 0 500 500">
+  <g id="box" transform="translate(50 50)">
+    <rect width="120" height="60" rx="8"></rect>
+    <text id="label" x="10" y="30">Card Text</text>
+  </g>
+</svg>`);
+		const svgEl = svg as any;
+		const history = new SvgHistoryManager();
+		history.setActiveSvg(svgEl);
+
+		const text = svg.querySelector("#label")!;
+		// When pointer is on text in a single-text group, resolveCloneTarget resolves the <g id="box">
+		const target = resolveCloneTarget(text);
+		expect(target?.id).toBe("box");
+
+		// Record snapshot before moving (exact behavior of Shift+drag on first move event)
+		history.recordSnapshot(svgEl);
+
+		// Nudge target
+		nudge(target!, 30, 40);
+		expect(target?.getAttribute("transform")).toBe("translate(80 90)");
+		expect(history.isDirty(svgEl)).toBe(true);
+
+		// Undo restores original transform
+		history.undo(svgEl);
+		const restoredTarget = svg.querySelector("#box")!;
+		expect(restoredTarget.getAttribute("transform")).toBe("translate(50 50)");
+		expect(history.isDirty(svgEl)).toBe(false);
+
+		// Redo reapplies the move
+		history.redo(svgEl);
+		const redoneTarget = svg.querySelector("#box")!;
+		expect(redoneTarget.getAttribute("transform")).toBe("translate(80 90)");
+		expect(history.isDirty(svgEl)).toBe(true);
+	});
+});
+
 
 

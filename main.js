@@ -385,12 +385,12 @@ function num(raw) {
 }
 function nudge(el, dx, dy) {
   const name = localName(el);
-  if (name === "g" || name === "svg" || name === "use" || el.hasAttribute("transform")) {
+  if (name === "g" || name === "svg" || name === "use" || name === "path" || name === "polygon" || name === "polyline" || el.hasAttribute("transform")) {
     const prev = el.getAttribute("transform") ?? "";
-    const m = prev.match(/translate\(\s*([-\d.]+)\s*[ ,]\s*([-\d.]+)\s*\)\s*$/);
+    const m = prev.match(/translate\(\s*([-\d.eE+]+)(?:[\s,]+([-\d.eE+]+))?\s*\)\s*$/);
     if (m) {
       const x = parseFloat(m[1]) + dx;
-      const y = parseFloat(m[2]) + dy;
+      const y = (m[2] != null ? parseFloat(m[2]) : 0) + dy;
       el.setAttribute("transform", prev.slice(0, m.index) + `translate(${trimNum(x)} ${trimNum(y)})`);
     } else {
       el.setAttribute("transform", `${prev} translate(${trimNum(dx)} ${trimNum(dy)})`.trim());
@@ -806,6 +806,7 @@ function getLocaleStrings() {
       modalTitleNamed: (name) => `SVG \u56FE\u50CF\u7F16\u8F91\u5668 \u2014 ${name}`,
       badgeEdit: "F2 / \u53CC\u51FB\u6587\u5B57\u7F16\u8F91",
       badgeDelete: "\u6E05\u7A7A\u6587\u5B57\u5373\u5220UI\u6846",
+      badgeMove: "Shift + \u62D6\u62FD\u79FB\u52A8UI\u6846",
       badgeClone: "Alt + \u62D6\u62FD\u590D\u5236UI\u6846",
       badgeUndoRedo: "Ctrl+Z/Y \u64A4\u9500\u91CD\u505A",
       badgeAutoSave: "\u9000\u51FA\u786E\u8BA4\u4FDD\u5B58",
@@ -835,6 +836,7 @@ function getLocaleStrings() {
     modalTitleNamed: (name) => `SVG Image Editor \u2014 ${name}`,
     badgeEdit: "F2 / Double-click to Edit",
     badgeDelete: "Clear Text to Delete Box",
+    badgeMove: "Shift + Drag to Move",
     badgeClone: "Alt + Drag to Duplicate",
     badgeUndoRedo: "Ctrl+Z/Y Undo/Redo",
     badgeAutoSave: "Save on Exit",
@@ -882,6 +884,8 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     this.registerDomEvent(window, "pointerup", (evt) => this.onPointerUp(evt), { capture: true });
     this.registerDomEvent(window, "keydown", (evt) => this.onKeyDown(evt), { capture: true });
     this.registerDomEvent(window, "dblclick", (evt) => {
+      if (evt.shiftKey || evt.altKey)
+        return;
       const text = this.textFromEvent(evt) ?? (evt.target instanceof Element ? findTextInCard(evt.target, evt.clientX, evt.clientY) : null);
       if (text && this.isInteractiveSvg(text)) {
         evt.preventDefault();
@@ -891,7 +895,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       }
     }, { capture: true });
     this.registerDomEvent(window, "click", (evt) => {
-      if (this.overlay)
+      if (this.overlay || evt.shiftKey || evt.altKey)
         return;
       const target = evt.target;
       if (!(target instanceof Element))
@@ -1184,6 +1188,9 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       const dx = evt.clientX - this.dragging.lastX;
       const dy = evt.clientY - this.dragging.lastY;
       if (dx !== 0 || dy !== 0) {
+        if (!this.dragging.moved && this.dragging.mode === "move") {
+          this.history.recordSnapshot(this.dragging.svg);
+        }
         this.dragging.moved = true;
         this.dragging.lastX = evt.clientX;
         this.dragging.lastY = evt.clientY;
@@ -1199,44 +1206,63 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     this.setHoveredSvgTarget(svgTarget);
   }
   onPointerDown(evt) {
-    if (!evt.altKey || evt.button !== 0)
+    if (!evt.altKey && !evt.shiftKey || evt.button !== 0)
       return;
     const target = evt.target instanceof Element ? evt.target : null;
     if (!target)
       return;
-    let cloneTarget = resolveCloneTarget(target, evt.clientX, evt.clientY);
-    if (!cloneTarget) {
+    let dragTarget = resolveCloneTarget(target, evt.clientX, evt.clientY);
+    if (!dragTarget) {
       const text = this.textFromEvent(evt);
       if (text) {
-        cloneTarget = resolveCloneTarget(text, evt.clientX, evt.clientY);
+        dragTarget = resolveCloneTarget(text, evt.clientX, evt.clientY);
       }
     }
-    if (!cloneTarget)
+    if (!dragTarget)
       return;
-    const isSvg = typeof SVGSVGElement !== "undefined" && cloneTarget instanceof SVGSVGElement || (cloneTarget.localName || cloneTarget.tagName.toLowerCase()).endsWith("svg");
-    const svg = isSvg ? cloneTarget : cloneTarget.ownerSVGElement ?? cloneTarget.closest("svg");
+    const isSvg = typeof SVGSVGElement !== "undefined" && dragTarget instanceof SVGSVGElement || (dragTarget.localName || dragTarget.tagName.toLowerCase()).endsWith("svg");
+    const svg = isSvg ? dragTarget : dragTarget.ownerSVGElement ?? dragTarget.closest("svg");
     if (!svg || !this.isInteractiveSvg(svg))
       return;
     evt.preventDefault();
     evt.stopPropagation();
     evt.stopImmediatePropagation();
-    this.history.recordSnapshot(svg);
-    const clone = cloneCard(cloneTarget, 12, 12);
-    cloneTarget.parentElement?.appendChild(clone);
-    this.dragging = {
-      card: clone,
-      svg,
-      pointerId: evt.pointerId,
-      lastX: evt.clientX,
-      lastY: evt.clientY,
-      moved: true
-    };
+    if (evt.shiftKey && !evt.altKey) {
+      document.body.style.cursor = "grabbing";
+      this.dragging = {
+        card: dragTarget,
+        svg,
+        pointerId: evt.pointerId,
+        lastX: evt.clientX,
+        lastY: evt.clientY,
+        moved: false,
+        mode: "move"
+      };
+    } else {
+      this.history.recordSnapshot(svg);
+      const clone = cloneCard(dragTarget, 12, 12);
+      dragTarget.parentElement?.appendChild(clone);
+      document.body.style.cursor = "copy";
+      this.dragging = {
+        card: clone,
+        svg,
+        pointerId: evt.pointerId,
+        lastX: evt.clientX,
+        lastY: evt.clientY,
+        moved: true,
+        mode: "clone"
+      };
+    }
   }
   onPointerUp(evt) {
     if (!this.dragging || evt.pointerId !== this.dragging.pointerId)
       return;
     const svg = this.dragging.svg;
+    const moved = this.dragging.moved;
     this.dragging = null;
+    document.body.style.cursor = "";
+    if (!moved)
+      return;
     const inModal = !!svg.closest(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body");
     if (!inModal) {
       void this.persistSvg(svg);
@@ -1666,7 +1692,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     titleDiv.appendChild(titleSpan);
     const hintsDiv = document.createElement("div");
     hintsDiv.className = "a1-svg-modal-hints";
-    for (const badgeText of [i18n.badgeEdit, i18n.badgeDelete, i18n.badgeClone, i18n.badgeUndoRedo]) {
+    for (const badgeText of [i18n.badgeEdit, i18n.badgeDelete, i18n.badgeMove, i18n.badgeClone, i18n.badgeUndoRedo]) {
       const badge = document.createElement("span");
       badge.className = "a1-svg-modal-badge";
       badge.textContent = badgeText;

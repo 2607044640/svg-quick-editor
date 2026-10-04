@@ -433,12 +433,12 @@ function num(raw: string | null): number | null {
 /** One translate, merged with a previous translate() so drags do not stack. */
 export function nudge(el: Element, dx: number, dy: number): void {
 	const name = localName(el);
-	if (name === "g" || name === "svg" || name === "use" || el.hasAttribute("transform")) {
+	if (name === "g" || name === "svg" || name === "use" || name === "path" || name === "polygon" || name === "polyline" || el.hasAttribute("transform")) {
 		const prev = el.getAttribute("transform") ?? "";
-		const m = prev.match(/translate\(\s*([-\d.]+)\s*[ ,]\s*([-\d.]+)\s*\)\s*$/);
+		const m = prev.match(/translate\(\s*([-\d.eE+]+)(?:[\s,]+([-\d.eE+]+))?\s*\)\s*$/);
 		if (m) {
 			const x = parseFloat(m[1]) + dx;
-			const y = parseFloat(m[2]) + dy;
+			const y = (m[2] != null ? parseFloat(m[2]) : 0) + dy;
 			el.setAttribute("transform", prev.slice(0, m.index) + `translate(${trimNum(x)} ${trimNum(y)})`);
 		} else {
 			el.setAttribute("transform", `${prev} translate(${trimNum(dx)} ${trimNum(dy)})`.trim());

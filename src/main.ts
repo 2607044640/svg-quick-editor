@@ -67,6 +67,7 @@ export function getLocaleStrings() {
 			modalTitleNamed: (name: string) => `SVG 图像编辑器 — ${name}`,
 			badgeEdit: "F2 / 双击文字编辑",
 			badgeDelete: "清空文字即删UI框",
+			badgeMove: "Shift + 拖拽移动UI框",
 			badgeClone: "Alt + 拖拽复制UI框",
 			badgeUndoRedo: "Ctrl+Z/Y 撤销重做",
 			badgeAutoSave: "退出确认保存",
@@ -97,6 +98,7 @@ export function getLocaleStrings() {
 		modalTitleNamed: (name: string) => `SVG Image Editor — ${name}`,
 		badgeEdit: "F2 / Double-click to Edit",
 		badgeDelete: "Clear Text to Delete Box",
+		badgeMove: "Shift + Drag to Move",
 		badgeClone: "Alt + Drag to Duplicate",
 		badgeUndoRedo: "Ctrl+Z/Y Undo/Redo",
 		badgeAutoSave: "Save on Exit",
@@ -130,7 +132,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 	private hoveredSvgTarget: Element | null = null;
 	private lastPointerX = 0;
 	private lastPointerY = 0;
-	private dragging: { card: Element; svg: SVGSVGElement; pointerId: number; lastX: number; lastY: number; moved: boolean } | null = null;
+	private dragging: { card: Element; svg: SVGSVGElement; pointerId: number; lastX: number; lastY: number; moved: boolean; mode: "move" | "clone" } | null = null;
 	private activeModal: HTMLElement | null = null;
 
 	async onload(): Promise<void> {
@@ -144,6 +146,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		this.registerDomEvent(window, "pointerup", (evt) => this.onPointerUp(evt), { capture: true });
 		this.registerDomEvent(window, "keydown", (evt) => this.onKeyDown(evt), { capture: true });
 		this.registerDomEvent(window, "dblclick", (evt) => {
+			if (evt.shiftKey || evt.altKey) return;
 			const text = this.textFromEvent(evt) ?? (evt.target instanceof Element ? findTextInCard(evt.target, evt.clientX, evt.clientY) : null);
 			if (text && this.isInteractiveSvg(text)) {
 				evt.preventDefault();
@@ -154,7 +157,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		}, { capture: true });
 
 		this.registerDomEvent(window, "click", (evt) => {
-			if (this.overlay) return;
+			if (this.overlay || (evt as MouseEvent).shiftKey || (evt as MouseEvent).altKey) return;
 			const target = evt.target;
 			if (!(target instanceof Element)) return;
 
@@ -484,6 +487,9 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			const dx = evt.clientX - this.dragging.lastX;
 			const dy = evt.clientY - this.dragging.lastY;
 			if (dx !== 0 || dy !== 0) {
+				if (!this.dragging.moved && this.dragging.mode === "move") {
+					this.history.recordSnapshot(this.dragging.svg);
+				}
 				this.dragging.moved = true;
 				this.dragging.lastX = evt.clientX;
 				this.dragging.lastY = evt.clientY;
@@ -501,46 +507,65 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 	}
 
 	private onPointerDown(evt: PointerEvent): void {
-		if (!evt.altKey || evt.button !== 0) return;
+		if ((!evt.altKey && !evt.shiftKey) || evt.button !== 0) return;
 		const target = evt.target instanceof Element ? evt.target : null;
 		if (!target) return;
 
-		let cloneTarget = resolveCloneTarget(target, evt.clientX, evt.clientY);
-		if (!cloneTarget) {
+		let dragTarget = resolveCloneTarget(target, evt.clientX, evt.clientY);
+		if (!dragTarget) {
 			const text = this.textFromEvent(evt);
 			if (text) {
-				cloneTarget = resolveCloneTarget(text, evt.clientX, evt.clientY);
+				dragTarget = resolveCloneTarget(text, evt.clientX, evt.clientY);
 			}
 		}
-		if (!cloneTarget) return;
+		if (!dragTarget) return;
 
-		const isSvg = (typeof SVGSVGElement !== "undefined" && cloneTarget instanceof SVGSVGElement) || (cloneTarget.localName || cloneTarget.tagName.toLowerCase()).endsWith("svg");
-		const svg = (isSvg ? cloneTarget : (cloneTarget.ownerSVGElement ?? cloneTarget.closest("svg"))) as SVGSVGElement | null;
+		const isSvg = (typeof SVGSVGElement !== "undefined" && dragTarget instanceof SVGSVGElement) || (dragTarget.localName || dragTarget.tagName.toLowerCase()).endsWith("svg");
+		const svg = (isSvg ? dragTarget : (dragTarget.ownerSVGElement ?? dragTarget.closest("svg"))) as SVGSVGElement | null;
 		if (!svg || !this.isInteractiveSvg(svg)) return;
 
 		evt.preventDefault();
 		evt.stopPropagation();
 		evt.stopImmediatePropagation();
 
-		// Record undo snapshot in memory before duplicating
-		this.history.recordSnapshot(svg);
-
-		const clone = cloneCard(cloneTarget, 12, 12);
-		cloneTarget.parentElement?.appendChild(clone);
-		this.dragging = {
-			card: clone,
-			svg,
-			pointerId: evt.pointerId,
-			lastX: evt.clientX,
-			lastY: evt.clientY,
-			moved: true,
-		};
+		if (evt.shiftKey && !evt.altKey) {
+			// Mode: Move UI box (Shift+drag)
+			document.body.style.cursor = "grabbing";
+			this.dragging = {
+				card: dragTarget,
+				svg,
+				pointerId: evt.pointerId,
+				lastX: evt.clientX,
+				lastY: evt.clientY,
+				moved: false,
+				mode: "move",
+			};
+		} else {
+			// Mode: Duplicate UI box (Alt+drag)
+			this.history.recordSnapshot(svg);
+			const clone = cloneCard(dragTarget, 12, 12);
+			dragTarget.parentElement?.appendChild(clone);
+			document.body.style.cursor = "copy";
+			this.dragging = {
+				card: clone,
+				svg,
+				pointerId: evt.pointerId,
+				lastX: evt.clientX,
+				lastY: evt.clientY,
+				moved: true,
+				mode: "clone",
+			};
+		}
 	}
 
 	private onPointerUp(evt: PointerEvent): void {
 		if (!this.dragging || evt.pointerId !== this.dragging.pointerId) return;
 		const svg = this.dragging.svg;
+		const moved = this.dragging.moved;
 		this.dragging = null;
+		document.body.style.cursor = "";
+
+		if (!moved) return;
 
 		const inModal = !!svg.closest(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body");
 		if (!inModal) {
@@ -1013,7 +1038,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 		const hintsDiv = document.createElement("div");
 		hintsDiv.className = "a1-svg-modal-hints";
-		for (const badgeText of [i18n.badgeEdit, i18n.badgeDelete, i18n.badgeClone, i18n.badgeUndoRedo]) {
+		for (const badgeText of [i18n.badgeEdit, i18n.badgeDelete, i18n.badgeMove, i18n.badgeClone, i18n.badgeUndoRedo]) {
 			const badge = document.createElement("span");
 			badge.className = "a1-svg-modal-badge";
 			badge.textContent = badgeText;
