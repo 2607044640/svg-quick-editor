@@ -75,6 +75,7 @@ export function getLocaleStrings() {
 			badgeAutoSave: "退出确认保存",
 			closeTooltip: "关闭 (Esc)",
 			noticeSaved: (name: string) => `SVG 已保存: ${name}`,
+			noticeSvgUpdated: (name: string) => `SVG 已自动检测到磁盘修改并重新加载: ${name}`,
 			noticeUndo: "已撤销",
 			noticeRedo: "已重做",
 			confirmSaveTitle: "是否保存？",
@@ -108,6 +109,7 @@ export function getLocaleStrings() {
 		badgeAutoSave: "Save on Exit",
 		closeTooltip: "Close (Esc)",
 		noticeSaved: (name: string) => `SVG saved: ${name}`,
+		noticeSvgUpdated: (name: string) => `SVG reloaded from disk: ${name}`,
 		noticeUndo: "Undone",
 		noticeRedo: "Redone",
 		confirmSaveTitle: "Save changes?",
@@ -149,6 +151,10 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 	} | null = null;
 	private autoAlign = true;
 	private activeModal: HTMLElement | null = null;
+	private currentModalPath: string | null = null;
+	private currentModalTitle: string | null = null;
+	private currentModalBody: HTMLElement | null = null;
+	private currentModalSvg: SVGSVGElement | null = null;
 
 	public getAutoAlign(): boolean {
 		return this.autoAlign;
@@ -171,6 +177,50 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		(window as any).svgQuickEditor = this;
 		this.addSettingTab(new A1SvgQuickEditorSettingTab(this.app, this));
 		await this.loadSettings();
+
+		// Auto-refresh: listen to external file modifications on disk (e.g. AI edits)
+		this.registerEvent(
+			this.app.vault.on("modify", async (file) => {
+				if (file instanceof TFile && file.extension === "svg") {
+					window.dispatchEvent(new CustomEvent("a1-svg-updated", {
+						detail: { path: file.path, name: file.name }
+					}));
+					this.refreshImgEmbeds(file.path);
+					if (this.currentModalPath && (this.currentModalPath === file.path || this.currentModalPath.endsWith(file.name))) {
+						if (this.currentModalSvg && !this.history.isDirty(this.currentModalSvg)) {
+							try {
+								let diskContent = "";
+								if (await this.app.vault.adapter.exists(file.path)) {
+									diskContent = await this.app.vault.adapter.read(file.path);
+								} else {
+									diskContent = await this.app.vault.read(file);
+								}
+								if (diskContent) {
+									this.hotReloadModal(diskContent);
+								}
+							} catch (e) {
+								console.error("Failed to hot reload on vault modify:", e);
+							}
+						}
+					}
+				}
+			})
+		);
+
+		// Auto-refresh: when user switches back to Obsidian ("返回软件")
+		this.registerDomEvent(window, "focus", () => {
+			void this.checkAndRefreshActiveSvg();
+		});
+		this.registerDomEvent(document, "visibilitychange", () => {
+			if (document.visibilityState === "visible") {
+				void this.checkAndRefreshActiveSvg();
+			}
+		});
+
+		// Auto-refresh: when Obsidian launches / workspace layout ready
+		this.app.workspace.onLayoutReady(() => {
+			void this.checkAndRefreshActiveSvg();
+		});
 
 		this.registerDomEvent(window, "pointermove", (evt) => this.onPointerMove(evt), { capture: true });
 		this.registerDomEvent(window, "pointerdown", (evt) => this.onPointerDown(evt), { capture: true });
@@ -864,17 +914,117 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		this.clearHover();
 	}
 
-	private refreshImgEmbeds(filePath: string): void {
+	public refreshImgEmbeds(filePath: string): void {
 		const filename = filePath.split("/").pop() || "";
-		const encoded = encodeURIComponent(filename);
-		const imgs = Array.from(document.querySelectorAll("img"));
+		if (!filename) return;
+		const filenameLower = filename.toLowerCase();
+		const encoded = encodeURIComponent(filename).toLowerCase();
+		const imgs = Array.from(document.querySelectorAll<HTMLImageElement>("img"));
+		for (const img of imgs) {
+			const src = (img.getAttribute("src") || "").toLowerCase();
+			const alt = (img.getAttribute("alt") || "").toLowerCase();
+			const dataSrc = (img.getAttribute("data-src") || "").toLowerCase();
+			if (
+				(src.includes(".svg") && (src.includes(filenameLower) || src.includes(encoded))) ||
+				alt === filenameLower ||
+				dataSrc.includes(filenameLower)
+			) {
+				const rawSrc = img.getAttribute("src") || "";
+				const clean = rawSrc.split("?")[0];
+				img.setAttribute("src", `${clean}?t=${Date.now()}`);
+			}
+		}
+		const embeds = Array.from(document.querySelectorAll<HTMLElement>(".internal-embed, .image-embed, .media-embed"));
+		for (const emb of embeds) {
+			const embSrc = (emb.getAttribute("src") || "").toLowerCase();
+			if (embSrc.includes(filenameLower)) {
+				const innerImg = emb.querySelector("img");
+				if (innerImg) {
+					const clean = innerImg.src.split("?")[0];
+					innerImg.setAttribute("src", `${clean}?t=${Date.now()}`);
+				}
+			}
+		}
+	}
+
+	public refreshAllVisibleSvgEmbeds(): void {
+		const imgs = Array.from(document.querySelectorAll<HTMLImageElement>("img"));
 		for (const img of imgs) {
 			const src = img.getAttribute("src") || "";
-			if (src.includes(filename) || src.includes(encoded)) {
+			if (src.toLowerCase().includes(".svg")) {
 				const clean = src.split("?")[0];
 				img.setAttribute("src", `${clean}?t=${Date.now()}`);
 			}
 		}
+	}
+
+	public hotReloadModal(freshSvgContent: string): void {
+		if (!this.activeModal || !this.currentModalBody) return;
+		let processed = freshSvgContent.trim();
+		if (!processed.includes("viewBox") && !processed.includes("viewbox")) {
+			const widthMatch = processed.match(/width=["']?(\d+(?:\.\d+)?)px?["']?/i);
+			const heightMatch = processed.match(/height=["']?(\d+(?:\.\d+)?)px?["']?/i);
+			if (widthMatch && heightMatch) {
+				processed = processed.replace(/<svg\b/i, `<svg viewBox="0 0 ${widthMatch[1]} ${heightMatch[1]}"`);
+			}
+		}
+		if (this.currentModalPath) {
+			processed = processed.replace(/<svg\b/i, `<svg ${SVG_PATH_ATTR}="${this.currentModalPath}"`);
+		}
+
+		try {
+			const parsed = new DOMParser().parseFromString(processed, "image/svg+xml");
+			const rootSvg = parsed.documentElement;
+			if (rootSvg) {
+				const adopted = document.adoptNode ? document.adoptNode(rootSvg) : rootSvg;
+				while (this.currentModalBody.firstChild) {
+					this.currentModalBody.firstChild.remove();
+				}
+				this.currentModalBody.appendChild(adopted);
+				const newModalSvg = this.currentModalBody.querySelector("svg") as SVGSVGElement | null;
+				if (newModalSvg) {
+					this.currentModalSvg = newModalSvg;
+					this.history.setActiveSvg(newModalSvg);
+				}
+				window.dispatchEvent(new CustomEvent("a1-svg-updated", {
+					detail: { path: this.currentModalPath, content: processed }
+				}));
+				const name = this.currentModalPath ? (this.currentModalPath.split("/").pop() || "SVG") : "SVG";
+				new Notice(getLocaleStrings().noticeSvgUpdated(name));
+			}
+		} catch (err) {
+			console.error("Failed to hot reload modal SVG:", err);
+		}
+	}
+
+	public async checkAndRefreshActiveSvg(): Promise<void> {
+		if (this.currentModalPath && this.currentModalSvg && this.activeModal) {
+			if (!this.history.isDirty(this.currentModalSvg)) {
+				try {
+					let diskContent = "";
+					if (await this.app.vault.adapter.exists(this.currentModalPath)) {
+						diskContent = await this.app.vault.adapter.read(this.currentModalPath);
+					} else {
+						const file = this.app.vault.getAbstractFileByPath(this.currentModalPath);
+						if (file instanceof TFile) {
+							diskContent = await this.app.vault.read(file);
+						}
+					}
+					if (diskContent) {
+						const currentLive = serializeSvg(this.currentModalSvg);
+						const normDisk = diskContent.replace(/\s+/g, " ").trim();
+						const normLive = currentLive.replace(/\s+/g, " ").trim();
+						if (normDisk !== normLive && !normDisk.includes(normLive.slice(0, 50))) {
+							this.hotReloadModal(diskContent);
+						}
+					}
+				} catch (e) {
+					console.error("Failed to check active SVG for updates:", e);
+				}
+			}
+		}
+
+		this.refreshAllVisibleSvgEmbeds();
 	}
 
 	private markerFor(svg: SVGSVGElement): string {
@@ -975,7 +1125,11 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 				}
 				if (file && file.extension === "svg") {
 					try {
-						rawSvgContent = await this.app.vault.read(file);
+						if (await this.app.vault.adapter.exists(file.path)) {
+							rawSvgContent = await this.app.vault.adapter.read(file.path);
+						} else {
+							rawSvgContent = await this.app.vault.read(file);
+						}
 						relPath = file.path;
 						title = i18n.modalTitleNamed(file.name);
 						break;
@@ -1008,9 +1162,18 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 					const f = this.app.vault.getAbstractFileByPath(svgPath);
 					if (f instanceof TFile) file = f;
 					relPath = svgPath;
+					try {
+						if (await this.app.vault.adapter.exists(svgPath)) {
+							rawSvgContent = await this.app.vault.adapter.read(svgPath);
+						} else if (file) {
+							rawSvgContent = await this.app.vault.read(file);
+						}
+					} catch {}
 				}
-				rawSvgContent = serializeSvg(candidateSvg);
-				if (file) title = i18n.modalTitleNamed(file.name);
+				if (!rawSvgContent) {
+					rawSvgContent = serializeSvg(candidateSvg);
+				}
+				if (file || relPath) title = i18n.modalTitleNamed(file?.name || relPath.split("/").pop() || "SVG");
 			}
 		}
 
@@ -1206,6 +1369,11 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			this.history.setActiveSvg(modalSvg);
 		}
 
+		this.currentModalPath = relPath;
+		this.currentModalTitle = title;
+		this.currentModalBody = body;
+		this.currentModalSvg = modalSvg;
+
 		dialog.appendChild(header);
 		dialog.appendChild(body);
 		backdrop.appendChild(dialog);
@@ -1215,6 +1383,10 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			this.clearHover();
 			backdrop.remove();
 			if (this.activeModal === backdrop) this.activeModal = null;
+			this.currentModalPath = null;
+			this.currentModalTitle = null;
+			this.currentModalBody = null;
+			this.currentModalSvg = null;
 			window.removeEventListener("keydown", keyHandler);
 		};
 

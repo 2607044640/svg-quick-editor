@@ -1059,6 +1059,7 @@ function getLocaleStrings() {
       badgeAutoSave: "\u9000\u51FA\u786E\u8BA4\u4FDD\u5B58",
       closeTooltip: "\u5173\u95ED (Esc)",
       noticeSaved: (name) => `SVG \u5DF2\u4FDD\u5B58: ${name}`,
+      noticeSvgUpdated: (name) => `SVG \u5DF2\u81EA\u52A8\u68C0\u6D4B\u5230\u78C1\u76D8\u4FEE\u6539\u5E76\u91CD\u65B0\u52A0\u8F7D: ${name}`,
       noticeUndo: "\u5DF2\u64A4\u9500",
       noticeRedo: "\u5DF2\u91CD\u505A",
       confirmSaveTitle: "\u662F\u5426\u4FDD\u5B58\uFF1F",
@@ -1091,6 +1092,7 @@ function getLocaleStrings() {
     badgeAutoSave: "Save on Exit",
     closeTooltip: "Close (Esc)",
     noticeSaved: (name) => `SVG saved: ${name}`,
+    noticeSvgUpdated: (name) => `SVG reloaded from disk: ${name}`,
     noticeUndo: "Undone",
     noticeRedo: "Redone",
     confirmSaveTitle: "Save changes?",
@@ -1123,6 +1125,10 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     this.dragging = null;
     this.autoAlign = true;
     this.activeModal = null;
+    this.currentModalPath = null;
+    this.currentModalTitle = null;
+    this.currentModalBody = null;
+    this.currentModalSvg = null;
   }
   getAutoAlign() {
     return this.autoAlign;
@@ -1143,6 +1149,44 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     window.svgQuickEditor = this;
     this.addSettingTab(new A1SvgQuickEditorSettingTab(this.app, this));
     await this.loadSettings();
+    this.registerEvent(
+      this.app.vault.on("modify", async (file) => {
+        if (file instanceof import_obsidian.TFile && file.extension === "svg") {
+          window.dispatchEvent(new CustomEvent("a1-svg-updated", {
+            detail: { path: file.path, name: file.name }
+          }));
+          this.refreshImgEmbeds(file.path);
+          if (this.currentModalPath && (this.currentModalPath === file.path || this.currentModalPath.endsWith(file.name))) {
+            if (this.currentModalSvg && !this.history.isDirty(this.currentModalSvg)) {
+              try {
+                let diskContent = "";
+                if (await this.app.vault.adapter.exists(file.path)) {
+                  diskContent = await this.app.vault.adapter.read(file.path);
+                } else {
+                  diskContent = await this.app.vault.read(file);
+                }
+                if (diskContent) {
+                  this.hotReloadModal(diskContent);
+                }
+              } catch (e) {
+                console.error("Failed to hot reload on vault modify:", e);
+              }
+            }
+          }
+        }
+      })
+    );
+    this.registerDomEvent(window, "focus", () => {
+      void this.checkAndRefreshActiveSvg();
+    });
+    this.registerDomEvent(document, "visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        void this.checkAndRefreshActiveSvg();
+      }
+    });
+    this.app.workspace.onLayoutReady(() => {
+      void this.checkAndRefreshActiveSvg();
+    });
     this.registerDomEvent(window, "pointermove", (evt) => this.onPointerMove(evt), { capture: true });
     this.registerDomEvent(window, "pointerdown", (evt) => this.onPointerDown(evt), { capture: true });
     this.registerDomEvent(window, "pointerup", (evt) => this.onPointerUp(evt), { capture: true });
@@ -1777,15 +1821,108 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
   }
   refreshImgEmbeds(filePath) {
     const filename = filePath.split("/").pop() || "";
-    const encoded = encodeURIComponent(filename);
+    if (!filename)
+      return;
+    const filenameLower = filename.toLowerCase();
+    const encoded = encodeURIComponent(filename).toLowerCase();
+    const imgs = Array.from(document.querySelectorAll("img"));
+    for (const img of imgs) {
+      const src = (img.getAttribute("src") || "").toLowerCase();
+      const alt = (img.getAttribute("alt") || "").toLowerCase();
+      const dataSrc = (img.getAttribute("data-src") || "").toLowerCase();
+      if (src.includes(".svg") && (src.includes(filenameLower) || src.includes(encoded)) || alt === filenameLower || dataSrc.includes(filenameLower)) {
+        const rawSrc = img.getAttribute("src") || "";
+        const clean = rawSrc.split("?")[0];
+        img.setAttribute("src", `${clean}?t=${Date.now()}`);
+      }
+    }
+    const embeds = Array.from(document.querySelectorAll(".internal-embed, .image-embed, .media-embed"));
+    for (const emb of embeds) {
+      const embSrc = (emb.getAttribute("src") || "").toLowerCase();
+      if (embSrc.includes(filenameLower)) {
+        const innerImg = emb.querySelector("img");
+        if (innerImg) {
+          const clean = innerImg.src.split("?")[0];
+          innerImg.setAttribute("src", `${clean}?t=${Date.now()}`);
+        }
+      }
+    }
+  }
+  refreshAllVisibleSvgEmbeds() {
     const imgs = Array.from(document.querySelectorAll("img"));
     for (const img of imgs) {
       const src = img.getAttribute("src") || "";
-      if (src.includes(filename) || src.includes(encoded)) {
+      if (src.toLowerCase().includes(".svg")) {
         const clean = src.split("?")[0];
         img.setAttribute("src", `${clean}?t=${Date.now()}`);
       }
     }
+  }
+  hotReloadModal(freshSvgContent) {
+    if (!this.activeModal || !this.currentModalBody)
+      return;
+    let processed = freshSvgContent.trim();
+    if (!processed.includes("viewBox") && !processed.includes("viewbox")) {
+      const widthMatch = processed.match(/width=["']?(\d+(?:\.\d+)?)px?["']?/i);
+      const heightMatch = processed.match(/height=["']?(\d+(?:\.\d+)?)px?["']?/i);
+      if (widthMatch && heightMatch) {
+        processed = processed.replace(/<svg\b/i, `<svg viewBox="0 0 ${widthMatch[1]} ${heightMatch[1]}"`);
+      }
+    }
+    if (this.currentModalPath) {
+      processed = processed.replace(/<svg\b/i, `<svg ${SVG_PATH_ATTR}="${this.currentModalPath}"`);
+    }
+    try {
+      const parsed = new DOMParser().parseFromString(processed, "image/svg+xml");
+      const rootSvg = parsed.documentElement;
+      if (rootSvg) {
+        const adopted = document.adoptNode ? document.adoptNode(rootSvg) : rootSvg;
+        while (this.currentModalBody.firstChild) {
+          this.currentModalBody.firstChild.remove();
+        }
+        this.currentModalBody.appendChild(adopted);
+        const newModalSvg = this.currentModalBody.querySelector("svg");
+        if (newModalSvg) {
+          this.currentModalSvg = newModalSvg;
+          this.history.setActiveSvg(newModalSvg);
+        }
+        window.dispatchEvent(new CustomEvent("a1-svg-updated", {
+          detail: { path: this.currentModalPath, content: processed }
+        }));
+        const name = this.currentModalPath ? this.currentModalPath.split("/").pop() || "SVG" : "SVG";
+        new import_obsidian.Notice(getLocaleStrings().noticeSvgUpdated(name));
+      }
+    } catch (err) {
+      console.error("Failed to hot reload modal SVG:", err);
+    }
+  }
+  async checkAndRefreshActiveSvg() {
+    if (this.currentModalPath && this.currentModalSvg && this.activeModal) {
+      if (!this.history.isDirty(this.currentModalSvg)) {
+        try {
+          let diskContent = "";
+          if (await this.app.vault.adapter.exists(this.currentModalPath)) {
+            diskContent = await this.app.vault.adapter.read(this.currentModalPath);
+          } else {
+            const file = this.app.vault.getAbstractFileByPath(this.currentModalPath);
+            if (file instanceof import_obsidian.TFile) {
+              diskContent = await this.app.vault.read(file);
+            }
+          }
+          if (diskContent) {
+            const currentLive = serializeSvg(this.currentModalSvg);
+            const normDisk = diskContent.replace(/\s+/g, " ").trim();
+            const normLive = currentLive.replace(/\s+/g, " ").trim();
+            if (normDisk !== normLive && !normDisk.includes(normLive.slice(0, 50))) {
+              this.hotReloadModal(diskContent);
+            }
+          }
+        } catch (e) {
+          console.error("Failed to check active SVG for updates:", e);
+        }
+      }
+    }
+    this.refreshAllVisibleSvgEmbeds();
   }
   markerFor(svg) {
     const existing = svg.getAttribute(MARK);
@@ -1870,7 +2007,11 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
         }
         if (file && file.extension === "svg") {
           try {
-            rawSvgContent = await this.app.vault.read(file);
+            if (await this.app.vault.adapter.exists(file.path)) {
+              rawSvgContent = await this.app.vault.adapter.read(file.path);
+            } else {
+              rawSvgContent = await this.app.vault.read(file);
+            }
             relPath = file.path;
             title = i18n.modalTitleNamed(file.name);
             break;
@@ -1900,10 +2041,20 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
           if (f instanceof import_obsidian.TFile)
             file = f;
           relPath = svgPath;
+          try {
+            if (await this.app.vault.adapter.exists(svgPath)) {
+              rawSvgContent = await this.app.vault.adapter.read(svgPath);
+            } else if (file) {
+              rawSvgContent = await this.app.vault.read(file);
+            }
+          } catch {
+          }
         }
-        rawSvgContent = serializeSvg(candidateSvg);
-        if (file)
-          title = i18n.modalTitleNamed(file.name);
+        if (!rawSvgContent) {
+          rawSvgContent = serializeSvg(candidateSvg);
+        }
+        if (file || relPath)
+          title = i18n.modalTitleNamed(file?.name || relPath.split("/").pop() || "SVG");
       }
     }
     if (!rawSvgContent) {
@@ -2075,6 +2226,10 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     if (modalSvg) {
       this.history.setActiveSvg(modalSvg);
     }
+    this.currentModalPath = relPath;
+    this.currentModalTitle = title;
+    this.currentModalBody = body;
+    this.currentModalSvg = modalSvg;
     dialog.appendChild(header);
     dialog.appendChild(body);
     backdrop.appendChild(dialog);
@@ -2084,6 +2239,10 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       backdrop.remove();
       if (this.activeModal === backdrop)
         this.activeModal = null;
+      this.currentModalPath = null;
+      this.currentModalTitle = null;
+      this.currentModalBody = null;
+      this.currentModalSvg = null;
       window.removeEventListener("keydown", keyHandler);
     };
     const requestClose = () => {
