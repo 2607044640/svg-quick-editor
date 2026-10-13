@@ -11,6 +11,7 @@ export interface OverlayOptions {
 	color: string;
 	onCommit: (value: string) => void;
 	onCancel: () => void;
+	onSave?: () => void;
 }
 
 /**
@@ -75,6 +76,15 @@ export function openTextOverlay(parent: HTMLElement, opts: OverlayOptions): Over
 	});
 	input.addEventListener("keydown", (e) => {
 		if (e.isComposing || composing || e.key === "Process") return;
+		if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === "s" || e.key === "S")) {
+			e.preventDefault();
+			e.stopPropagation();
+			commit();
+			if (opts.onSave) {
+				opts.onSave();
+			}
+			return;
+		}
 		if (e.key === "Enter") {
 			e.preventDefault();
 			e.stopPropagation();

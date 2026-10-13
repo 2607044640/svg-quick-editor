@@ -65,7 +65,8 @@ export function getLocaleStrings() {
 		return {
 			modalTitleDefault: "SVG 图像编辑器",
 			modalTitleNamed: (name: string) => `SVG 图像编辑器 — ${name}`,
-			badgeEdit: "F2 / 双击文字编辑",
+			badgeEdit: "Ctrl+S 保存",
+			badgeSave: "Ctrl+S 保存",
 			badgeDelete: "清空文字即删UI框",
 			badgeMove: "Shift + 拖拽移动UI框",
 			badgeClone: "Alt + 拖拽复制UI框",
@@ -99,7 +100,8 @@ export function getLocaleStrings() {
 	return {
 		modalTitleDefault: "SVG Image Editor",
 		modalTitleNamed: (name: string) => `SVG Image Editor — ${name}`,
-		badgeEdit: "F2 / Double-click to Edit",
+		badgeEdit: "Ctrl+S to Save",
+		badgeSave: "Ctrl+S to Save",
 		badgeDelete: "Clear Text to Delete Box",
 		badgeMove: "Shift + Drag to Move",
 		badgeClone: "Alt + Drag to Duplicate",
@@ -412,7 +414,19 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			}
 		}
 
-		// 3. Undo (Ctrl+Z) and Redo (Ctrl+Y / Ctrl+Shift+Z)
+		// 3. Save (Ctrl+S / Cmd+S): Directly overwrite local file, keeping Ctrl+Z/Y history
+		if ((evt.ctrlKey || evt.metaKey) && !evt.altKey && !evt.shiftKey && (evt.key === "s" || evt.key === "S")) {
+			const activeSvg = this.history.getActiveSvg();
+			if (activeSvg) {
+				evt.preventDefault();
+				evt.stopPropagation();
+				evt.stopImmediatePropagation();
+				void this.saveCurrentSvg(activeSvg, true);
+				return;
+			}
+		}
+
+		// 4. Undo (Ctrl+Z) and Redo (Ctrl+Y / Ctrl+Shift+Z)
 		if ((evt.ctrlKey || evt.metaKey) && !evt.altKey && !this.overlay) {
 			const activeSvg = this.history.getActiveSvg();
 			if (activeSvg) {
@@ -464,11 +478,11 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		this.history.setActiveSvg(svg);
 	}
 
-	public async saveCurrentSvg(svg?: SVGSVGElement | null): Promise<void> {
+	public async saveCurrentSvg(svg?: SVGSVGElement | null, keepHistory = false): Promise<void> {
 		const target = svg ?? this.history.getActiveSvg();
 		if (!target) return;
 		await this.persistSvg(target);
-		this.history.markSaved(target);
+		this.history.markSaved(target, keepHistory);
 	}
 
 	public discardCurrentSvg(svg?: SVGSVGElement | null): void {
@@ -814,6 +828,9 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			},
 			onCancel: () => {
 				this.overlay = null;
+			},
+			onSave: () => {
+				void this.saveCurrentSvg(svg, true);
 			},
 		});
 	}
@@ -1429,6 +1446,14 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		});
 
 		const keyHandler = (e: KeyboardEvent) => {
+			if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === "s" || e.key === "S")) {
+				e.preventDefault();
+				e.stopPropagation();
+				if (modalSvg) {
+					void this.saveCurrentSvg(modalSvg, true);
+				}
+				return;
+			}
 			if (e.key === "Escape" && !this.overlay && !isConfirming) {
 				e.preventDefault();
 				requestClose();

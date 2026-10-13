@@ -146,11 +146,13 @@ export class SvgHistoryManager {
 		this.clear(target);
 	}
 
-	public markSaved(svg?: SVGSVGElement | null): void {
+	public markSaved(svg?: SVGSVGElement | null, keepHistory = false): void {
 		const target = svg ?? this.getActiveSvg();
 		if (!target) return;
 		this.initialContent.set(target, cleanSvgHtml(target.innerHTML));
-		this.clear(target);
+		if (!keepHistory) {
+			this.clear(target);
+		}
 	}
 
 	public clear(svg?: SVGSVGElement | null): void {

@@ -793,6 +793,15 @@ function openTextOverlay(parent, opts) {
   input.addEventListener("keydown", (e) => {
     if (e.isComposing || composing || e.key === "Process")
       return;
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === "s" || e.key === "S")) {
+      e.preventDefault();
+      e.stopPropagation();
+      commit();
+      if (opts.onSave) {
+        opts.onSave();
+      }
+      return;
+    }
     if (e.key === "Enter") {
       e.preventDefault();
       e.stopPropagation();
@@ -983,12 +992,14 @@ var SvgHistoryManager = class {
     }
     this.clear(target);
   }
-  markSaved(svg) {
+  markSaved(svg, keepHistory = false) {
     const target = svg ?? this.getActiveSvg();
     if (!target)
       return;
     this.initialContent.set(target, cleanSvgHtml(target.innerHTML));
-    this.clear(target);
+    if (!keepHistory) {
+      this.clear(target);
+    }
   }
   clear(svg) {
     const target = svg ?? this.getActiveSvg();
@@ -1049,7 +1060,8 @@ function getLocaleStrings() {
     return {
       modalTitleDefault: "SVG \u56FE\u50CF\u7F16\u8F91\u5668",
       modalTitleNamed: (name) => `SVG \u56FE\u50CF\u7F16\u8F91\u5668 \u2014 ${name}`,
-      badgeEdit: "F2 / \u53CC\u51FB\u6587\u5B57\u7F16\u8F91",
+      badgeEdit: "Ctrl+S \u4FDD\u5B58",
+      badgeSave: "Ctrl+S \u4FDD\u5B58",
       badgeDelete: "\u6E05\u7A7A\u6587\u5B57\u5373\u5220UI\u6846",
       badgeMove: "Shift + \u62D6\u62FD\u79FB\u52A8UI\u6846",
       badgeClone: "Alt + \u62D6\u62FD\u590D\u5236UI\u6846",
@@ -1082,7 +1094,8 @@ function getLocaleStrings() {
   return {
     modalTitleDefault: "SVG Image Editor",
     modalTitleNamed: (name) => `SVG Image Editor \u2014 ${name}`,
-    badgeEdit: "F2 / Double-click to Edit",
+    badgeEdit: "Ctrl+S to Save",
+    badgeSave: "Ctrl+S to Save",
     badgeDelete: "Clear Text to Delete Box",
     badgeMove: "Shift + Drag to Move",
     badgeClone: "Alt + Drag to Duplicate",
@@ -1364,6 +1377,16 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
         return;
       }
     }
+    if ((evt.ctrlKey || evt.metaKey) && !evt.altKey && !evt.shiftKey && (evt.key === "s" || evt.key === "S")) {
+      const activeSvg = this.history.getActiveSvg();
+      if (activeSvg) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        evt.stopImmediatePropagation();
+        void this.saveCurrentSvg(activeSvg, true);
+        return;
+      }
+    }
     if ((evt.ctrlKey || evt.metaKey) && !evt.altKey && !this.overlay) {
       const activeSvg = this.history.getActiveSvg();
       if (activeSvg) {
@@ -1410,12 +1433,12 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
   registerActiveSvg(svg) {
     this.history.setActiveSvg(svg);
   }
-  async saveCurrentSvg(svg) {
+  async saveCurrentSvg(svg, keepHistory = false) {
     const target = svg ?? this.history.getActiveSvg();
     if (!target)
       return;
     await this.persistSvg(target);
-    this.history.markSaved(target);
+    this.history.markSaved(target, keepHistory);
   }
   discardCurrentSvg(svg) {
     const target = svg ?? this.history.getActiveSvg();
@@ -1726,6 +1749,9 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       },
       onCancel: () => {
         this.overlay = null;
+      },
+      onSave: () => {
+        void this.saveCurrentSvg(svg, true);
       }
     });
   }
@@ -2285,6 +2311,14 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       }
     });
     const keyHandler = (e) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (modalSvg) {
+          void this.saveCurrentSvg(modalSvg, true);
+        }
+        return;
+      }
       if (e.key === "Escape" && !this.overlay && !isConfirming) {
         e.preventDefault();
         requestClose();
