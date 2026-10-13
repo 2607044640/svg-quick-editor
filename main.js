@@ -188,6 +188,30 @@ function resolveCloneTarget(target, clientX, clientY) {
   }
   return null;
 }
+function resolveDeleteTarget(target, clientX, clientY) {
+  if (!target)
+    return null;
+  const hasInstanceOf = "instanceOf" in target && typeof target.instanceOf === "function";
+  const isSvgRoot = (hasInstanceOf ? target.instanceOf(SVGSVGElement) : false) || localName(target) === "svg";
+  if (isSvgRoot)
+    return null;
+  const svg = target.ownerSVGElement ?? target.closest("svg");
+  if (!svg)
+    return null;
+  if (target.closest("[data-a1-align], .a1-svg-edit, defs, style, marker"))
+    return null;
+  if (localName(target) === "rect" && !isCardSizedRect(target, svg)) {
+    return null;
+  }
+  const resolved = resolveCloneTarget(target, clientX, clientY);
+  if (!resolved || resolved === svg)
+    return null;
+  const name = localName(resolved);
+  if (name === "svg" || name === "defs" || name === "style" || name === "marker") {
+    return null;
+  }
+  return { element: resolved, svg };
+}
 function findCard(textEl) {
   const textRoot = localName(textEl) === "tspan" ? textEl.closest("text") ?? textEl : textEl;
   let node = textRoot;
@@ -1454,6 +1478,40 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
         }
       }
     }
+    if ((evt.key === "Delete" || evt.code === "Delete") && !evt.repeat && !evt.altKey && !evt.metaKey && !evt.ctrlKey && !evt.shiftKey) {
+      if (this.deleteHoveredBox()) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        evt.stopImmediatePropagation();
+        return;
+      }
+    }
+  }
+  deleteHoveredBox() {
+    if (this.overlay)
+      return false;
+    const activeTag = document.activeElement?.tagName?.toLowerCase();
+    if (activeTag === "input" || activeTag === "textarea" || document.activeElement?.isContentEditable) {
+      return false;
+    }
+    const el = this.lastPointerX > 0 || this.lastPointerY > 0 ? document.elementFromPoint(this.lastPointerX, this.lastPointerY) : null;
+    const candidate = this.hovered ?? el ?? this.hoveredSvgTarget;
+    if (!candidate)
+      return false;
+    const delTarget = resolveDeleteTarget(candidate, this.lastPointerX, this.lastPointerY);
+    if (!delTarget || !this.isInteractiveSvg(delTarget.svg))
+      return false;
+    this.history.recordSnapshot(delTarget.svg);
+    delTarget.element.remove();
+    this.clearHover();
+    this.clearHoveredSvgTarget();
+    const inModal = !!delTarget.svg.closest(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body");
+    if (!inModal) {
+      void this.persistSvg(delTarget.svg);
+    }
+    const isZh = getLocaleStrings().noticeUndo === "\u5DF2\u64A4\u9500";
+    this.showSaveToast(isZh ? "\u5DF2\u5220\u9664 UI \u6846 (Ctrl+Z \u53EF\u64A4\u9500)" : "UI box deleted (Ctrl+Z to undo)");
+    return true;
   }
   undo(svg) {
     const res = this.history.undo(svg);
@@ -2237,17 +2295,48 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     }
     const titleSpan = document.createElement("span");
     titleSpan.textContent = title;
-    titleDiv.appendChild(titleSpan);
-    const hintsDiv = document.createElement("div");
-    hintsDiv.className = "a1-svg-modal-hints";
-    for (const badgeText of [i18n.badgeEdit, i18n.badgeDelete, i18n.badgeMove, i18n.badgeClone, i18n.badgeUndoRedo]) {
-      const badge = document.createElement("span");
-      badge.className = "a1-svg-modal-badge";
-      badge.textContent = badgeText;
-      hintsDiv.appendChild(badge);
+    const isZh = getLocaleStrings().noticeUndo === "\u5DF2\u64A4\u9500";
+    const helpWrap = document.createElement("div");
+    helpWrap.className = "svg-help-wrap";
+    const helpIcon = document.createElement("div");
+    helpIcon.className = "svg-help-icon";
+    helpIcon.textContent = "?";
+    helpIcon.title = isZh ? "\u64CD\u4F5C\u8BF4\u660E (\u60AC\u6D6E\u67E5\u770B)" : "Help & Shortcuts (Hover to view)";
+    const helpPopover = document.createElement("div");
+    helpPopover.className = "svg-help-popover";
+    const shortcuts = isZh ? [
+      { key: "Ctrl+S", desc: "\u5373\u65F6\u4FDD\u5B58 (\u4FDD\u7559\u64A4\u9500\u8BB0\u5F55)" },
+      { key: "Delete", desc: "\u60AC\u6D6EUI\u6846\u6309\u952E\u76F4\u63A5\u5220\u9664" },
+      { key: "\u6E05\u7A7A\u6587\u672C", desc: "\u6E05\u7A7A\u6587\u5B57\u81EA\u52A8\u5220\u9664UI\u6846" },
+      { key: "Shift+\u62D6\u62FD", desc: "\u79FB\u52A8UI\u6846" },
+      { key: "Alt+\u62D6\u62FD", desc: "\u590D\u5236\u514B\u9686UI\u6846" },
+      { key: "Ctrl+Z / Y", desc: "\u64A4\u9500\u4E0E\u91CD\u505A" },
+      { key: "\u53CC\u51FB / F2", desc: "\u5FEB\u901F\u7F16\u8F91\u6587\u5B57" }
+    ] : [
+      { key: "Ctrl+S", desc: "Save in-place (keeps history)" },
+      { key: "Delete", desc: "Hover and press Delete to remove box" },
+      { key: "Clear Text", desc: "Auto-deletes box when text is empty" },
+      { key: "Shift+Drag", desc: "Move UI box" },
+      { key: "Alt+Drag", desc: "Duplicate / clone UI box" },
+      { key: "Ctrl+Z / Y", desc: "Undo & Redo" },
+      { key: "Dblclick / F2", desc: "Quick edit text" }
+    ];
+    for (const item of shortcuts) {
+      const row = document.createElement("div");
+      row.className = "svg-help-row";
+      const kbd = document.createElement("kbd");
+      kbd.textContent = item.key;
+      const desc = document.createElement("span");
+      desc.className = "svg-help-desc";
+      desc.textContent = item.desc;
+      row.appendChild(kbd);
+      row.appendChild(desc);
+      helpPopover.appendChild(row);
     }
+    helpWrap.appendChild(helpIcon);
+    helpWrap.appendChild(helpPopover);
     titleRow.appendChild(titleDiv);
-    titleRow.appendChild(hintsDiv);
+    titleRow.appendChild(helpWrap);
     const actionGroup = document.createElement("div");
     actionGroup.className = "a1-svg-modal-actions";
     const alignBtn = document.createElement("button");

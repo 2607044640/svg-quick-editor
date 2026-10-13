@@ -1,6 +1,6 @@
 import { parseHTML } from "linkedom";
 import { describe, expect, it } from "vitest";
-import { cloneCard, collectAlignTargets, commitText, findCard, findTextInCard, insertCloneSibling, nudge, resetCloneSeq, resolveCloneTarget, resolveHit, serializeSvg, snapDelta } from "./svgCard";
+import { cloneCard, collectAlignTargets, commitText, findCard, findTextInCard, insertCloneSibling, nudge, resetCloneSeq, resolveCloneTarget, resolveDeleteTarget, resolveHit, serializeSvg, snapDelta } from "./svgCard";
 import { ensureMarker, findSvgSpans, matchSpan, spliceSvg } from "./svgSource";
 import { SvgHistoryManager } from "./svgHistory";
 
@@ -612,6 +612,34 @@ describe("insertCloneSibling", () => {
 		expect(clone.parentElement).toBe(chip.parentElement);
 		expect(clone.previousElementSibling).toBe(chip);
 		expect(chip.parentElement!.children[2].id).toBe(clone.id);
+	});
+});
+
+describe("resolveDeleteTarget", () => {
+	it("resolves a dedicated chip card for deletion", () => {
+		const { svg } = doc(CHIP);
+		const text = svg.querySelector("text")!;
+		const res = resolveDeleteTarget(text);
+		expect(res).not.toBeNull();
+		expect(res!.element.id).toBe("row");
+		expect(res!.svg).toBe(svg);
+	});
+
+	it("never deletes the root svg or full-canvas background rect", () => {
+		const { svg } = doc(`<svg viewBox="0 0 1000 800">
+			<rect id="bg" width="1000" height="800" fill="#fff"></rect>
+			<g id="box"><rect x="10" y="10" width="100" height="40"></rect></g>
+		</svg>`);
+		expect(resolveDeleteTarget(svg)).toBeNull();
+		expect(resolveDeleteTarget(svg.querySelector("#bg")!)).toBeNull();
+	});
+
+	it("resolves an individual card in a board with multiple cards", () => {
+		const { svg } = doc(BOARD);
+		const rectA = svg.querySelector("#chip-a rect")!;
+		const res = resolveDeleteTarget(rectA);
+		expect(res).not.toBeNull();
+		expect(res!.element.id).toBe("chip-a");
 	});
 });
 

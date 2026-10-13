@@ -185,6 +185,40 @@ export function resolveCloneTarget(target: Element, clientX?: number, clientY?: 
 }
 
 /**
+ * Resolves what element should be removed when user presses Delete over a hovered element:
+ * - If target is a small box / chip / text, deletes that small box / text.
+ * - If target is an outer card background or border, deletes the card group.
+ * - Never deletes the root <svg>, <defs>, <style>, [data-a1-align], or canvas-filling background rect.
+ */
+export function resolveDeleteTarget(target: Element, clientX?: number, clientY?: number): { element: Element; svg: SVGSVGElement } | null {
+	if (!target) return null;
+	const hasInstanceOf = "instanceOf" in target && typeof (target as { instanceOf?: (cls: unknown) => boolean }).instanceOf === "function";
+	const isSvgRoot = (hasInstanceOf ? (target as { instanceOf: (cls: unknown) => boolean }).instanceOf(SVGSVGElement) : false) || localName(target) === "svg";
+	if (isSvgRoot) return null;
+
+	const svg = (target.ownerSVGElement ?? target.closest("svg")) as SVGSVGElement | null;
+	if (!svg) return null;
+
+	// Never delete align guides, overlay UI, defs, or style
+	if (target.closest("[data-a1-align], .a1-svg-edit, defs, style, marker")) return null;
+
+	// Do not delete canvas-sized background rect
+	if (localName(target) === "rect" && !isCardSizedRect(target, svg)) {
+		return null;
+	}
+
+	const resolved = resolveCloneTarget(target, clientX, clientY);
+	if (!resolved || resolved === svg) return null;
+
+	const name = localName(resolved);
+	if (name === "svg" || name === "defs" || name === "style" || name === "marker") {
+		return null;
+	}
+
+	return { element: resolved, svg };
+}
+
+/**
  * Card = the box that should disappear with this sentence.
  * 1. Ancestor (or self) with data-a1-card.
  * 2. Nearest <g> that contains exactly one <text> (a single-sentence chip).

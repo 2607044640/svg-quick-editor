@@ -1,5 +1,5 @@
 import { App, MarkdownView, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile } from "obsidian";
-import { asText, cloneCard, commitText, findTextInCard, insertCloneSibling, nudge, readText, resolveCloneTarget, resolveHit, serializeSvg, snapDelta, type AlignGuide, type TextHit } from "./svgCard";
+import { asText, cloneCard, commitText, findTextInCard, insertCloneSibling, nudge, readText, resolveCloneTarget, resolveDeleteTarget, resolveHit, serializeSvg, snapDelta, type AlignGuide, type TextHit } from "./svgCard";
 import { openTextOverlay, type OverlayHandle } from "./editorOverlay";
 import { ensureMarker, matchSpan, spliceSvg } from "./svgSource";
 import { SvgHistoryManager } from "./svgHistory";
@@ -506,6 +506,47 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 				}
 			}
 		}
+
+		// 5. Delete key: Directly delete hovered UI box/card element
+		if ((evt.key === "Delete" || evt.code === "Delete") && !evt.repeat && !evt.altKey && !evt.metaKey && !evt.ctrlKey && !evt.shiftKey) {
+			if (this.deleteHoveredBox()) {
+				evt.preventDefault();
+				evt.stopPropagation();
+				evt.stopImmediatePropagation();
+				return;
+			}
+		}
+	}
+
+	public deleteHoveredBox(): boolean {
+		if (this.overlay) return false;
+		const activeTag = document.activeElement?.tagName?.toLowerCase();
+		if (activeTag === "input" || activeTag === "textarea" || (document.activeElement as HTMLElement)?.isContentEditable) {
+			return false;
+		}
+
+		const el = (this.lastPointerX > 0 || this.lastPointerY > 0)
+			? document.elementFromPoint(this.lastPointerX, this.lastPointerY)
+			: null;
+		const candidate = this.hovered ?? el ?? this.hoveredSvgTarget;
+		if (!candidate) return false;
+
+		const delTarget = resolveDeleteTarget(candidate, this.lastPointerX, this.lastPointerY);
+		if (!delTarget || !this.isInteractiveSvg(delTarget.svg)) return false;
+
+		this.history.recordSnapshot(delTarget.svg);
+		delTarget.element.remove();
+		this.clearHover();
+		this.clearHoveredSvgTarget();
+
+		const inModal = !!delTarget.svg.closest(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body");
+		if (!inModal) {
+			void this.persistSvg(delTarget.svg);
+		}
+
+		const isZh = (getLocaleStrings().noticeUndo === "已撤销");
+		this.showSaveToast(isZh ? "已删除 UI 框 (Ctrl+Z 可撤销)" : "UI box deleted (Ctrl+Z to undo)");
+		return true;
 	}
 
 	public undo(svg?: SVGSVGElement | null): boolean {
@@ -1376,19 +1417,57 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 		const titleSpan = document.createElement("span");
 		titleSpan.textContent = title;
-		titleDiv.appendChild(titleSpan);
+		const isZh = (getLocaleStrings().noticeUndo === "已撤销");
+		const helpWrap = document.createElement("div");
+		helpWrap.className = "svg-help-wrap";
 
-		const hintsDiv = document.createElement("div");
-		hintsDiv.className = "a1-svg-modal-hints";
-		for (const badgeText of [i18n.badgeEdit, i18n.badgeDelete, i18n.badgeMove, i18n.badgeClone, i18n.badgeUndoRedo]) {
-			const badge = document.createElement("span");
-			badge.className = "a1-svg-modal-badge";
-			badge.textContent = badgeText;
-			hintsDiv.appendChild(badge);
+		const helpIcon = document.createElement("div");
+		helpIcon.className = "svg-help-icon";
+		helpIcon.textContent = "?";
+		helpIcon.title = isZh ? "操作说明 (悬浮查看)" : "Help & Shortcuts (Hover to view)";
+
+		const helpPopover = document.createElement("div");
+		helpPopover.className = "svg-help-popover";
+
+		const shortcuts = isZh ? [
+			{ key: "Ctrl+S", desc: "即时保存 (保留撤销记录)" },
+			{ key: "Delete", desc: "悬浮UI框按键直接删除" },
+			{ key: "清空文本", desc: "清空文字自动删除UI框" },
+			{ key: "Shift+拖拽", desc: "移动UI框" },
+			{ key: "Alt+拖拽", desc: "复制克隆UI框" },
+			{ key: "Ctrl+Z / Y", desc: "撤销与重做" },
+			{ key: "双击 / F2", desc: "快速编辑文字" },
+		] : [
+			{ key: "Ctrl+S", desc: "Save in-place (keeps history)" },
+			{ key: "Delete", desc: "Hover and press Delete to remove box" },
+			{ key: "Clear Text", desc: "Auto-deletes box when text is empty" },
+			{ key: "Shift+Drag", desc: "Move UI box" },
+			{ key: "Alt+Drag", desc: "Duplicate / clone UI box" },
+			{ key: "Ctrl+Z / Y", desc: "Undo & Redo" },
+			{ key: "Dblclick / F2", desc: "Quick edit text" },
+		];
+
+		for (const item of shortcuts) {
+			const row = document.createElement("div");
+			row.className = "svg-help-row";
+
+			const kbd = document.createElement("kbd");
+			kbd.textContent = item.key;
+
+			const desc = document.createElement("span");
+			desc.className = "svg-help-desc";
+			desc.textContent = item.desc;
+
+			row.appendChild(kbd);
+			row.appendChild(desc);
+			helpPopover.appendChild(row);
 		}
 
+		helpWrap.appendChild(helpIcon);
+		helpWrap.appendChild(helpPopover);
+
 		titleRow.appendChild(titleDiv);
-		titleRow.appendChild(hintsDiv);
+		titleRow.appendChild(helpWrap);
 
 		const actionGroup = document.createElement("div");
 		actionGroup.className = "a1-svg-modal-actions";
