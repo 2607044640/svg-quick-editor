@@ -12,8 +12,10 @@
 ## Key Invariants
 
 1. `findCard` never returns a `<g>` that contains more than one `<text>`, unless that group is marked `data-a1-card`. (Why chosen over "always delete the parent g": a board of sentences would lose every sibling.)
-2. `nudge` merges a trailing `translate(x y)` instead of appending another. (Why chosen over stacking transforms: a drag of N moves would otherwise emit N translates.)
+2. `nudge` merges an existing `translate(...)` in-place (even before `scale(...)`) instead of appending another.
 3. `serializeSvg` escapes text and attributes itself. It does not call `XMLSerializer`.
+4. `scaleCard` scales elements around geometric center $C$ using $t_{new} = k \cdot t_{old} + (1 - k) \cdot C$, assembling compact `translate(tx ty) scale(s)`.
+5. `resolveScaleTarget` and `resolveDeleteTarget` protect canvas background rects, `<defs>`, `<style>`, and root `<svg>` from accidental mutation.
 
 ## Data Flow
 
@@ -21,7 +23,9 @@
 2. `findCard` walks ancestors.
 3. `commitText` either `writeText`s the trimmed string or `remove()`s `hit.owned`.
 4. Clone path: `cloneCard` deep-clones, `nudge`s, rewrites `id` and `url(#id)` / `#id` references.
-5. `serializeSvg` walks the root. `svgSource` splices that string into the markdown span from `matchSpan`.
+5. Scale path: `resolveScaleTarget` resolves element, `scaleCard` computes local center and updates scale transform.
+6. Delete path: `resolveDeleteTarget` resolves element and removes it without text-edit mode.
+7. `serializeSvg` walks the root. `svgSource` splices that string into the markdown span from `matchSpan`.
 
 ## Side-effects API
 
@@ -31,6 +35,10 @@
 | `commitText` | `(hit, raw: string) => CommitResult` | Mutates or removes DOM nodes |
 | `cloneCard` | `(card, dx, dy) => Element` | Returns a detached clone; bumps internal id counter |
 | `nudge` | `(el, dx, dy) => void` | Rewrites `transform` or x/y numeric attrs |
+| `resolveScaleTarget` | `(target: Element, cx?, cy?) => { element, svg } \| null` | Pure query |
+| `scaleCard` | `(el, svg, factor) => { scale: number } \| null` | Rewrites element `transform` attribute |
+| `getElementCenter` | `(el, svg) => { x, y }` | Pure query (bbox or measureBox fallback) |
+| `resolveDeleteTarget` | `(target: Element, cx?, cy?) => { element, svg } \| null` | Pure query |
 | `serializeSvg` | `(el: Element) => string` | Pure query |
 | `findSvgSpans` | `(markdown: string) => SvgSpan[]` | Pure query |
 | `matchSpan` | `(markdown, domIndex, marker) => SvgSpan \| null` | Pure query. Marker wins over index |
