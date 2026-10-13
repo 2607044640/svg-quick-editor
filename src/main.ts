@@ -171,17 +171,36 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			this.toastTimer = null;
 		}
 
+		// Insert directly inside the active modal dialog if present, otherwise on body
+		const modalContainer = this.activeModal?.querySelector(".a1-svg-modal-dialog")
+			?? (document.querySelector(".a1-svg-modal-dialog, .svg-lightbox-modal") as HTMLElement | null);
+		const container = modalContainer ?? document.body;
+		const isInModal = container !== document.body;
+
 		const toast = document.createElement("div");
-		toast.className = "a1-svg-toast";
-		toast.innerHTML = `
-			<svg class="a1-svg-toast-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-				<path d="M20 6L9 17l-5-5"/>
-			</svg>
-			<span>${text}</span>
-		`;
-		document.body.appendChild(toast);
+		toast.className = isInModal ? "a1-svg-modal-toast" : "a1-svg-toast";
+
+		const iconSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		iconSvg.setAttribute("class", "a1-svg-toast-icon");
+		iconSvg.setAttribute("viewBox", "0 0 24 24");
+		iconSvg.setAttribute("fill", "none");
+		iconSvg.setAttribute("stroke", "#4ade80");
+		iconSvg.setAttribute("stroke-width", "2.5");
+		iconSvg.setAttribute("stroke-linecap", "round");
+		iconSvg.setAttribute("stroke-linejoin", "round");
+		const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+		path.setAttribute("d", "M20 6L9 17l-5-5");
+		iconSvg.appendChild(path);
+
+		const textSpan = document.createElement("span");
+		textSpan.textContent = text;
+
+		toast.appendChild(iconSvg);
+		toast.appendChild(textSpan);
+		container.appendChild(toast);
 		this.activeToastEl = toast;
 
+		// 3-second display duration
 		this.toastTimer = setTimeout(() => {
 			toast.classList.add("is-fading");
 			setTimeout(() => {
@@ -189,8 +208,8 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 				if (this.activeToastEl === toast) {
 					this.activeToastEl = null;
 				}
-			}, 250);
-		}, 2200);
+			}, 300);
+		}, 3000);
 	}
 
 	public getAutoAlign(): boolean {
@@ -954,7 +973,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			// Dispatch event for other plugins (fluent-tasks, etc.)
 			window.dispatchEvent(new CustomEvent("a1-svg-updated", { detail: { path: svgPath, content: live } }));
 			const name = svgPath.split("/").pop() || "SVG";
-			new Notice(getLocaleStrings().noticeSaved(name));
+			this.showSaveToast(getLocaleStrings().noticeSaved(name));
 			this.clearHover();
 			return;
 		}
@@ -971,6 +990,8 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			const stamped = ensureMarker(live, marker);
 			return spliceSvg(data, span, stamped);
 		});
+		const isZh = (getLocaleStrings().noticeUndo === "已撤销");
+		this.showSaveToast(isZh ? "SVG 已保存到笔记" : "SVG saved to note");
 		this.clearHover();
 	}
 

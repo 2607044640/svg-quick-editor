@@ -1142,6 +1142,50 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     this.currentModalTitle = null;
     this.currentModalBody = null;
     this.currentModalSvg = null;
+    this.toastTimer = null;
+    this.activeToastEl = null;
+  }
+  showSaveToast(message) {
+    const text = message || getLocaleStrings().noticeSaved("SVG");
+    if (this.activeToastEl) {
+      this.activeToastEl.remove();
+      this.activeToastEl = null;
+    }
+    if (this.toastTimer) {
+      clearTimeout(this.toastTimer);
+      this.toastTimer = null;
+    }
+    const modalContainer = this.activeModal?.querySelector(".a1-svg-modal-dialog") ?? document.querySelector(".a1-svg-modal-dialog, .svg-lightbox-modal");
+    const container = modalContainer ?? document.body;
+    const isInModal = container !== document.body;
+    const toast = document.createElement("div");
+    toast.className = isInModal ? "a1-svg-modal-toast" : "a1-svg-toast";
+    const iconSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    iconSvg.setAttribute("class", "a1-svg-toast-icon");
+    iconSvg.setAttribute("viewBox", "0 0 24 24");
+    iconSvg.setAttribute("fill", "none");
+    iconSvg.setAttribute("stroke", "#4ade80");
+    iconSvg.setAttribute("stroke-width", "2.5");
+    iconSvg.setAttribute("stroke-linecap", "round");
+    iconSvg.setAttribute("stroke-linejoin", "round");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", "M20 6L9 17l-5-5");
+    iconSvg.appendChild(path);
+    const textSpan = document.createElement("span");
+    textSpan.textContent = text;
+    toast.appendChild(iconSvg);
+    toast.appendChild(textSpan);
+    container.appendChild(toast);
+    this.activeToastEl = toast;
+    this.toastTimer = setTimeout(() => {
+      toast.classList.add("is-fading");
+      setTimeout(() => {
+        toast.remove();
+        if (this.activeToastEl === toast) {
+          this.activeToastEl = null;
+        }
+      }, 300);
+    }, 3e3);
   }
   getAutoAlign() {
     return this.autoAlign;
@@ -1378,7 +1422,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       }
     }
     if ((evt.ctrlKey || evt.metaKey) && !evt.altKey && !evt.shiftKey && (evt.key === "s" || evt.key === "S")) {
-      const activeSvg = this.history.getActiveSvg();
+      const activeSvg = this.history.getActiveSvg() ?? this.currentModalSvg ?? document.querySelector(".a1-svg-modal-body svg, .svg-lightbox-content svg");
       if (activeSvg) {
         evt.preventDefault();
         evt.stopPropagation();
@@ -1434,11 +1478,14 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     this.history.setActiveSvg(svg);
   }
   async saveCurrentSvg(svg, keepHistory = false) {
-    const target = svg ?? this.history.getActiveSvg();
+    const target = svg ?? this.history.getActiveSvg() ?? this.currentModalSvg ?? document.querySelector(".a1-svg-modal-body svg, .svg-lightbox-content svg");
     if (!target)
       return;
     await this.persistSvg(target);
     this.history.markSaved(target, keepHistory);
+    const svgPath = target.getAttribute(SVG_PATH_ATTR) || this.currentModalPath;
+    const name = svgPath ? svgPath.split("/").pop() || "SVG" : "SVG";
+    this.showSaveToast(getLocaleStrings().noticeSaved(name));
   }
   discardCurrentSvg(svg) {
     const target = svg ?? this.history.getActiveSvg();
@@ -1826,7 +1873,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       this.refreshImgEmbeds(svgPath);
       window.dispatchEvent(new CustomEvent("a1-svg-updated", { detail: { path: svgPath, content: live2 } }));
       const name = svgPath.split("/").pop() || "SVG";
-      new import_obsidian.Notice(getLocaleStrings().noticeSaved(name));
+      this.showSaveToast(getLocaleStrings().noticeSaved(name));
       this.clearHover();
       return;
     }
@@ -1843,6 +1890,8 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       const stamped = ensureMarker(live, marker);
       return spliceSvg(data, span, stamped);
     });
+    const isZh = getLocaleStrings().noticeUndo === "\u5DF2\u64A4\u9500";
+    this.showSaveToast(isZh ? "SVG \u5DF2\u4FDD\u5B58\u5230\u7B14\u8BB0" : "SVG saved to note");
     this.clearHover();
   }
   refreshImgEmbeds(filePath) {
@@ -2259,7 +2308,6 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     dialog.appendChild(header);
     dialog.appendChild(body);
     backdrop.appendChild(dialog);
-    let isConfirming = false;
     const closeModal = () => {
       this.clearHover();
       backdrop.remove();
@@ -2272,29 +2320,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       window.removeEventListener("keydown", keyHandler);
     };
     const requestClose = () => {
-      if (isConfirming)
-        return;
       this.clearHover();
-      if (modalSvg && this.history.isDirty(modalSvg)) {
-        isConfirming = true;
-        this.promptSaveConfirmation(
-          async () => {
-            isConfirming = false;
-            await this.persistSvg(modalSvg);
-            this.history.markSaved(modalSvg);
-            closeModal();
-          },
-          () => {
-            isConfirming = false;
-            this.history.discard(modalSvg);
-            closeModal();
-          },
-          () => {
-            isConfirming = false;
-          }
-        );
-        return;
-      }
       closeModal();
     };
     closeBtn.addEventListener("click", requestClose);
@@ -2319,7 +2345,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
         }
         return;
       }
-      if (e.key === "Escape" && !this.overlay && !isConfirming) {
+      if (e.key === "Escape" && !this.overlay) {
         e.preventDefault();
         requestClose();
       }
