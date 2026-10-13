@@ -838,6 +838,164 @@ function bestAxisSnap(self, peers, axis, pxPerMm, movingIsSmall) {
   }
   return best ? { delta: best.delta, guide: best.guide } : null;
 }
+function smartAutoLayout(svg) {
+  const vbAttr = (svg.getAttribute("viewBox") || svg.getAttribute("viewbox") || "").trim().split(/[\s,]+/);
+  const svgW = vbAttr.length === 4 ? parseFloat(vbAttr[2]) : num(svg.getAttribute("width")) || 800;
+  const svgH = vbAttr.length === 4 ? parseFloat(vbAttr[3]) : num(svg.getAttribute("height")) || 600;
+  const allRects = Array.from(svg.querySelectorAll("rect")).filter((r) => {
+    if (r.hasAttribute("data-a1-align") || r.closest("[data-a1-align]"))
+      return false;
+    const w = num(r.getAttribute("width")) ?? 0;
+    const h = num(r.getAttribute("height")) ?? 0;
+    return w > 0 && h > 0;
+  });
+  const containerRects = allRects.filter((r) => {
+    const box = measureBox(r, svg);
+    if (!box)
+      return false;
+    const w = box.right - box.left;
+    const h = box.bottom - box.top;
+    const isCanvasBg = w >= svgW * 0.92 && h >= svgH * 0.92;
+    return w >= 220 && h >= 120 && !isCanvasBg;
+  });
+  const containers = [];
+  if (containerRects.length > 0) {
+    for (const cr of containerRects) {
+      const b = measureBox(cr, svg);
+      if (b)
+        containers.push({ bounds: b, rectEl: cr });
+    }
+  } else {
+    containers.push({
+      bounds: { left: 24, top: 24, right: svgW - 24, bottom: svgH - 24 }
+    });
+  }
+  let totalChanged = false;
+  let totalCount = 0;
+  for (const { bounds: cBox, rectEl } of containers) {
+    const targets = collectAlignTargets(svg, rectEl ?? svg).filter((t) => {
+      if (rectEl && (t === rectEl || rectEl.contains(t))) {
+        if (t === rectEl)
+          return false;
+      }
+      const box = measureBox(t, svg);
+      if (!box)
+        return false;
+      const cx = (box.left + box.right) / 2;
+      const cy = (box.top + box.bottom) / 2;
+      return cx >= cBox.left && cx <= cBox.right && cy >= cBox.top && cy <= cBox.bottom;
+    });
+    if (targets.length === 0)
+      continue;
+    const itemElements = [];
+    for (const t of targets) {
+      const isChildOfOther = targets.some((other) => other !== t && other.contains(t));
+      if (!isChildOfOther) {
+        itemElements.push(t);
+      }
+    }
+    if (itemElements.length === 0)
+      continue;
+    let headerBottom = cBox.top;
+    const contentItems = [];
+    for (const el of itemElements) {
+      const box = measureBox(el, svg);
+      if (!box)
+        continue;
+      const name = localName(el);
+      const isPureText = name === "text" || name === "g" && !el.querySelector("rect") && el.querySelectorAll("text").length >= 1;
+      const isNearTop = box.top < cBox.top + (cBox.bottom - cBox.top) * 0.35;
+      if (isPureText && isNearTop) {
+        headerBottom = Math.max(headerBottom, box.bottom);
+      } else {
+        contentItems.push({ el, box });
+      }
+    }
+    if (contentItems.length === 0)
+      continue;
+    const sorted = [...contentItems].sort((a, b) => (a.box.left + a.box.right) / 2 - (b.box.left + b.box.right) / 2);
+    const columns = [];
+    for (const item of sorted) {
+      const itemCx = (item.box.left + item.box.right) / 2;
+      const itemW = item.box.right - item.box.left;
+      let placed = false;
+      for (const col of columns) {
+        const colCx = col.reduce((sum, it) => sum + (it.box.left + it.box.right) / 2, 0) / col.length;
+        if (Math.abs(itemCx - colCx) < Math.max(50, itemW * 0.35)) {
+          col.push(item);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) {
+        columns.push([item]);
+      }
+    }
+    const topLimit = Math.max(cBox.top + 16, headerBottom + 16);
+    const bottomLimit = cBox.bottom - 16;
+    const availH = bottomLimit - topLimit;
+    if (availH <= 0)
+      continue;
+    for (const col of columns) {
+      col.sort((a, b) => a.box.top - b.box.top);
+      const N = col.length;
+      if (N === 0)
+        continue;
+      const totalItemH = col.reduce((sum, it) => sum + (it.box.bottom - it.box.top), 0);
+      let startY = topLimit;
+      let gap = 20;
+      if (N === 1) {
+        const it = col[0];
+        const itemH = it.box.bottom - it.box.top;
+        const itemW = it.box.right - it.box.left;
+        const targetY = topLimit + (availH - itemH) / 2;
+        const colCenter2 = (cBox.left + cBox.right) / 2;
+        const targetX = colCenter2 - itemW / 2;
+        const dy = targetY - it.box.top;
+        const dx = targetX - it.box.left;
+        if (Math.abs(dy) > 1 || Math.abs(dx) > 1) {
+          nudge(it.el, dx, dy);
+          totalChanged = true;
+          totalCount++;
+        }
+        continue;
+      }
+      if (availH > totalItemH) {
+        const equalGap = (availH - totalItemH) / (N + 1);
+        if (equalGap >= 12 && equalGap <= 42) {
+          gap = equalGap;
+          const span = totalItemH + (N - 1) * gap;
+          startY = topLimit + (availH - span) / 2;
+        } else if (equalGap > 42) {
+          gap = 26;
+          const span = totalItemH + (N - 1) * gap;
+          startY = topLimit + (availH - span) / 2;
+        } else {
+          gap = Math.max(8, (availH - totalItemH) / (N - 1));
+          const span = totalItemH + (N - 1) * gap;
+          startY = topLimit + Math.max(0, (availH - span) / 2);
+        }
+      }
+      const colCenter = columns.length === 1 ? (cBox.left + cBox.right) / 2 : col.reduce((sum, it) => sum + (it.box.left + it.box.right) / 2, 0) / N;
+      let curY = startY;
+      for (const it of col) {
+        const itemH = it.box.bottom - it.box.top;
+        const itemW = it.box.right - it.box.left;
+        const targetY = curY;
+        const targetX = colCenter - itemW / 2;
+        const dy = targetY - it.box.top;
+        const dx = targetX - it.box.left;
+        if (Math.abs(dy) > 1 || Math.abs(dx) > 1) {
+          nudge(it.el, dx, dy);
+          totalChanged = true;
+          totalCount++;
+        }
+        curY += itemH + gap;
+      }
+    }
+  }
+  return { changed: totalChanged, count: totalCount };
+}
 
 // src/editorOverlay.ts
 function openTextOverlay(parent, opts) {
@@ -1174,6 +1332,10 @@ function getLocaleStrings() {
       badgeUndoRedo: "Ctrl+Z/Y \u64A4\u9500\u91CD\u505A",
       btnAutoAlign: "Auto Align",
       btnAutoAlignTip: "\u62D6\u52A8\u65F6\uFF0C\u5728\u5F88\u5C0F\u7684\u8303\u56F4\u5185\u81EA\u52A8\u5BF9\u9F50\u4E0A\u4E0B\u5DE6\u53F3\u3002\u5C0F\u6846\u7EA6 5mm\uFF0C\u5927\u6846\u7EA6 2mm\u3002",
+      btnSmartLayout: "\u667A\u80FD\u6392\u7248",
+      btnSmartLayoutTip: "\u667A\u80FD\u6392\u7248\uFF1A\u5220\u9664\u90E8\u5206UI\u5361\u7247\u540E\u81EA\u52A8\u5C45\u4E2D\u5E76\u5747\u5300\u5206\u5E03\u5269\u4F59\u5361\u7247\u4E0E\u95F4\u9699 (Ctrl+Z \u53EF\u64A4\u9500)",
+      noticeSmartLayoutApplied: "\u5DF2\u5B8C\u6210\u667A\u80FD\u6392\u7248 (Ctrl+Z \u53EF\u64A4\u9500)",
+      noticeSmartLayoutNoChange: "\u5F53\u524D\u5E03\u5C40\u5DF2\u5C45\u4E2D\u5E73\u8861\uFF0C\u65E0\u9700\u8C03\u6574",
       badgeAutoSave: "\u9000\u51FA\u786E\u8BA4\u4FDD\u5B58",
       closeTooltip: "\u5173\u95ED (Esc)",
       noticeSaved: (name) => `SVG \u5DF2\u4FDD\u5B58: ${name}`,
@@ -1208,6 +1370,10 @@ function getLocaleStrings() {
     badgeUndoRedo: "Ctrl+Z/Y Undo/Redo",
     btnAutoAlign: "Auto Align",
     btnAutoAlignTip: "While dragging, lock edges and centers that come within a few millimetres. Small boxes ~5mm, large cards ~2mm.",
+    btnSmartLayout: "Smart Layout",
+    btnSmartLayoutTip: "Smart Layout: auto-center and evenly balance remaining cards and gaps (Ctrl+Z to undo)",
+    noticeSmartLayoutApplied: "Smart layout applied (Ctrl+Z to undo)",
+    noticeSmartLayoutNoChange: "Layout is already balanced",
     badgeAutoSave: "Save on Exit",
     closeTooltip: "Close (Esc)",
     noticeSaved: (name) => `SVG saved: ${name}`,
@@ -1307,6 +1473,22 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       this.clearAlignGuides(this.dragging.svg);
     }
   }
+  smartLayout(targetSvg) {
+    const svg = targetSvg ?? this.currentModalSvg ?? document.querySelector(".a1-svg-modal-body svg, .svg-lightbox-content svg");
+    if (!svg)
+      return false;
+    this.history.recordSnapshot(svg);
+    const res = smartAutoLayout(svg);
+    const i18n = getLocaleStrings();
+    if (res.changed) {
+      this.history.markDirty(svg);
+      this.showSaveToast(i18n.noticeSmartLayoutApplied);
+      return true;
+    } else {
+      this.showSaveToast(i18n.noticeSmartLayoutNoChange);
+      return false;
+    }
+  }
   async onload() {
     window.a1SvgQuickEditor = this;
     window.svgQuickEditor = this;
@@ -1404,6 +1586,13 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
           void this.openSvgEditorModal(target);
         else
           new import_obsidian.Notice(getLocaleStrings().noticeHoverSvgPrompt);
+      }
+    });
+    this.addCommand({
+      id: "smart-layout-svg",
+      name: "Smart layout active SVG (Auto-center and balance cards)",
+      callback: () => {
+        this.smartLayout();
       }
     });
   }
@@ -2438,6 +2627,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     helpPopover.className = "svg-help-popover";
     const shortcuts = isZh ? [
       { key: "Ctrl+S", desc: "\u5373\u65F6\u4FDD\u5B58 (\u4FDD\u7559\u64A4\u9500\u8BB0\u5F55)" },
+      { key: "\u667A\u80FD\u6392\u7248", desc: "\u81EA\u52A8\u5C45\u4E2D\u5E76\u5747\u5300\u5206\u5E03\u5361\u7247\u95F4\u9699" },
       { key: "Ctrl+\u6EDA\u8F6E", desc: "\u7F29\u653EUI\u6846\u5927\u5C0F (\u589E\u5927/\u51CF\u5C0F)" },
       { key: "Delete", desc: "\u60AC\u6D6EUI\u6846\u6309\u952E\u76F4\u63A5\u5220\u9664" },
       { key: "\u6E05\u7A7A\u6587\u672C", desc: "\u6E05\u7A7A\u6587\u5B57\u81EA\u52A8\u5220\u9664UI\u6846" },
@@ -2447,6 +2637,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       { key: "\u53CC\u51FB / F2", desc: "\u5FEB\u901F\u7F16\u8F91\u6587\u5B57" }
     ] : [
       { key: "Ctrl+S", desc: "Save in-place (keeps history)" },
+      { key: "Smart Layout", desc: "Auto-center and balance cards & gaps" },
       { key: "Ctrl+Scroll", desc: "Scale UI box size (enlarge/shrink)" },
       { key: "Delete", desc: "Hover and press Delete to remove box" },
       { key: "Clear Text", desc: "Auto-deletes box when text is empty" },
@@ -2488,6 +2679,16 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
         this.clearAlignGuides(modalSvg);
     });
     actionGroup.appendChild(alignBtn);
+    const smartLayoutBtn = document.createElement("button");
+    smartLayoutBtn.type = "button";
+    smartLayoutBtn.className = "a1-svg-modal-tab-btn";
+    smartLayoutBtn.textContent = i18n.btnSmartLayout;
+    smartLayoutBtn.title = i18n.btnSmartLayoutTip;
+    smartLayoutBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.smartLayout(modalSvg);
+    });
+    actionGroup.appendChild(smartLayoutBtn);
     if (relPath) {
       const openInTabBtn = document.createElement("button");
       openInTabBtn.type = "button";

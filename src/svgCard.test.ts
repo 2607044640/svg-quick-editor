@@ -1,6 +1,6 @@
 import { parseHTML } from "linkedom";
 import { describe, expect, it } from "vitest";
-import { cloneCard, collectAlignTargets, commitText, findCard, findTextInCard, insertCloneSibling, nudge, resetCloneSeq, resolveCloneTarget, resolveDeleteTarget, resolveHit, resolveScaleTarget, scaleCard, serializeSvg, snapDelta } from "./svgCard";
+import { cloneCard, collectAlignTargets, commitText, findCard, findTextInCard, insertCloneSibling, nudge, resetCloneSeq, resolveCloneTarget, resolveDeleteTarget, resolveHit, resolveScaleTarget, scaleCard, serializeSvg, smartAutoLayout, snapDelta } from "./svgCard";
 import { ensureMarker, findSvgSpans, matchSpan, spliceSvg } from "./svgSource";
 import { SvgHistoryManager } from "./svgHistory";
 
@@ -691,4 +691,102 @@ describe("scaleCard & resolveScaleTarget", () => {
 		expect(tr).toContain("translate(");
 	});
 });
+
+describe("smartAutoLayout", () => {
+	const SVG_STACK = `
+<svg viewBox="0 0 900 500">
+  <rect id="canvasBg" width="900" height="500" fill="#000"></rect>
+  <rect id="container" x="40" y="40" width="820" height="420" rx="12" fill="#111"></rect>
+  <text id="title" x="70" y="80" font-size="22">任务效率</text>
+  <g id="row1" transform="translate(70 260)">
+    <rect width="760" height="40" rx="6"></rect>
+    <text x="20" y="25">Item 1</text>
+  </g>
+  <g id="row2" transform="translate(70 320)">
+    <rect width="760" height="40" rx="6"></rect>
+    <text x="20" y="25">Item 2</text>
+  </g>
+  <g id="row3" transform="translate(70 380)">
+    <rect width="760" height="40" rx="6"></rect>
+    <text x="20" y="25">Item 3</text>
+  </g>
+</svg>`;
+
+	it("redistributes clustered items vertically with balanced spacing and centering", () => {
+		const { svg } = doc(SVG_STACK);
+		const res = smartAutoLayout(svg);
+		expect(res.changed).toBe(true);
+		expect(res.count).toBe(3);
+
+		// row1 should have moved up from y=260 into the upper available space (below title at y=80)
+		const tr1 = svg.querySelector("#row1")!.getAttribute("transform")!;
+		const m1 = tr1.match(/translate\(\s*([-\d.]+)\s*[ ,]\s*([-\d.]+)\s*\)/);
+		expect(m1).not.toBeNull();
+		const y1 = parseFloat(m1![2]);
+		expect(y1).toBeLessThan(260);
+		expect(y1).toBeGreaterThanOrEqual(96); // Must stay below header title
+
+		// row2 should be below row1, and row3 below row2
+		const tr2 = svg.querySelector("#row2")!.getAttribute("transform")!;
+		const m2 = tr2.match(/translate\(\s*([-\d.]+)\s*[ ,]\s*([-\d.]+)\s*\)/);
+		const y2 = parseFloat(m2![2]);
+		expect(y2).toBeGreaterThan(y1);
+
+		const tr3 = svg.querySelector("#row3")!.getAttribute("transform")!;
+		const m3 = tr3.match(/translate\(\s*([-\d.]+)\s*[ ,]\s*([-\d.]+)\s*\)/);
+		const y3 = parseFloat(m3![2]);
+		expect(y3).toBeGreaterThan(y2);
+
+		// Spacing between row1-row2 and row2-row3 should be consistent
+		const gap1 = y2 - (y1 + 40);
+		const gap2 = y3 - (y2 + 40);
+		expect(Math.abs(gap1 - gap2)).toBeLessThanOrEqual(1);
+	});
+
+	it("centers a single remaining item vertically and horizontally", () => {
+		const { svg } = doc(`
+<svg viewBox="0 0 800 400">
+  <rect id="container" x="50" y="50" width="700" height="300"></rect>
+  <text id="title" x="80" y="85">Title</text>
+  <g id="singleItem" transform="translate(80 280)">
+    <rect width="600" height="40"></rect>
+    <text x="10" y="20">Only Item</text>
+  </g>
+</svg>`);
+		const res = smartAutoLayout(svg);
+		expect(res.changed).toBe(true);
+		expect(res.count).toBe(1);
+
+		const tr = svg.querySelector("#singleItem")!.getAttribute("transform")!;
+		const m = tr.match(/translate\(\s*([-\d.]+)\s*[ ,]\s*([-\d.]+)\s*\)/);
+		expect(m).not.toBeNull();
+		const y = parseFloat(m![2]);
+		// Should be centered in available vertical space (between ~100 and ~330)
+		expect(y).toBeLessThan(280);
+		expect(y).toBeGreaterThan(150);
+	});
+
+	it("supports undo and redo seamlessly via SvgHistoryManager", () => {
+		const { svg } = doc(SVG_STACK);
+		const history = new SvgHistoryManager();
+		history.recordSnapshot(svg);
+
+		const res = smartAutoLayout(svg);
+		expect(res.changed).toBe(true);
+
+		const modifiedTr = svg.querySelector("#row1")!.getAttribute("transform");
+		expect(modifiedTr).not.toBe("translate(70 260)");
+
+		// Undo
+		const undone = history.undo(svg);
+		expect(undone).toBe(true);
+		expect(svg.querySelector("#row1")!.getAttribute("transform")).toBe("translate(70 260)");
+
+		// Redo
+		const redone = history.redo(svg);
+		expect(redone).toBe(true);
+		expect(svg.querySelector("#row1")!.getAttribute("transform")).toBe(modifiedTr);
+	});
+});
+
 

@@ -1,5 +1,5 @@
 import { App, MarkdownView, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile } from "obsidian";
-import { asText, cloneCard, commitText, findTextInCard, insertCloneSibling, nudge, readText, resolveCloneTarget, resolveDeleteTarget, resolveHit, resolveScaleTarget, scaleCard, serializeSvg, snapDelta, type AlignGuide, type TextHit } from "./svgCard";
+import { asText, cloneCard, commitText, findTextInCard, insertCloneSibling, nudge, readText, resolveCloneTarget, resolveDeleteTarget, resolveHit, resolveScaleTarget, scaleCard, serializeSvg, smartAutoLayout, snapDelta, type AlignGuide, type TextHit } from "./svgCard";
 import { openTextOverlay, type OverlayHandle } from "./editorOverlay";
 import { ensureMarker, matchSpan, spliceSvg } from "./svgSource";
 import { SvgHistoryManager } from "./svgHistory";
@@ -73,6 +73,10 @@ export function getLocaleStrings() {
 			badgeUndoRedo: "Ctrl+Z/Y 撤销重做",
 			btnAutoAlign: "Auto Align",
 			btnAutoAlignTip: "拖动时，在很小的范围内自动对齐上下左右。小框约 5mm，大框约 2mm。",
+			btnSmartLayout: "智能排版",
+			btnSmartLayoutTip: "智能排版：删除部分UI卡片后自动居中并均匀分布剩余卡片与间隙 (Ctrl+Z 可撤销)",
+			noticeSmartLayoutApplied: "已完成智能排版 (Ctrl+Z 可撤销)",
+			noticeSmartLayoutNoChange: "当前布局已居中平衡，无需调整",
 			badgeAutoSave: "退出确认保存",
 			closeTooltip: "关闭 (Esc)",
 			noticeSaved: (name: string) => `SVG 已保存: ${name}`,
@@ -108,6 +112,10 @@ export function getLocaleStrings() {
 		badgeUndoRedo: "Ctrl+Z/Y Undo/Redo",
 		btnAutoAlign: "Auto Align",
 		btnAutoAlignTip: "While dragging, lock edges and centers that come within a few millimetres. Small boxes ~5mm, large cards ~2mm.",
+		btnSmartLayout: "Smart Layout",
+		btnSmartLayoutTip: "Smart Layout: auto-center and evenly balance remaining cards and gaps (Ctrl+Z to undo)",
+		noticeSmartLayoutApplied: "Smart layout applied (Ctrl+Z to undo)",
+		noticeSmartLayoutNoChange: "Layout is already balanced",
 		badgeAutoSave: "Save on Exit",
 		closeTooltip: "Close (Esc)",
 		noticeSaved: (name: string) => `SVG saved: ${name}`,
@@ -228,6 +236,22 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		}
 	}
 
+	public smartLayout(targetSvg?: SVGSVGElement | null): boolean {
+		const svg = targetSvg ?? this.currentModalSvg ?? (document.querySelector(".a1-svg-modal-body svg, .svg-lightbox-content svg") as SVGSVGElement | null);
+		if (!svg) return false;
+		this.history.recordSnapshot(svg);
+		const res = smartAutoLayout(svg);
+		const i18n = getLocaleStrings();
+		if (res.changed) {
+			this.history.markDirty(svg);
+			this.showSaveToast(i18n.noticeSmartLayoutApplied);
+			return true;
+		} else {
+			this.showSaveToast(i18n.noticeSmartLayoutNoChange);
+			return false;
+		}
+	}
+
 	async onload(): Promise<void> {
 		(window as any).a1SvgQuickEditor = this;
 		(window as any).svgQuickEditor = this;
@@ -334,6 +358,14 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 				const target = this.hoveredSvgTarget ?? this.findSvgTargetAtPoint(this.lastPointerX, this.lastPointerY);
 				if (target) void this.openSvgEditorModal(target);
 				else new Notice(getLocaleStrings().noticeHoverSvgPrompt);
+			},
+		});
+
+		this.addCommand({
+			id: "smart-layout-svg",
+			name: "Smart layout active SVG (Auto-center and balance cards)",
+			callback: () => {
+				this.smartLayout();
 			},
 		});
 	}
@@ -1487,6 +1519,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 		const shortcuts = isZh ? [
 			{ key: "Ctrl+S", desc: "即时保存 (保留撤销记录)" },
+			{ key: "智能排版", desc: "自动居中并均匀分布卡片间隙" },
 			{ key: "Ctrl+滚轮", desc: "缩放UI框大小 (增大/减小)" },
 			{ key: "Delete", desc: "悬浮UI框按键直接删除" },
 			{ key: "清空文本", desc: "清空文字自动删除UI框" },
@@ -1496,6 +1529,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			{ key: "双击 / F2", desc: "快速编辑文字" },
 		] : [
 			{ key: "Ctrl+S", desc: "Save in-place (keeps history)" },
+			{ key: "Smart Layout", desc: "Auto-center and balance cards & gaps" },
 			{ key: "Ctrl+Scroll", desc: "Scale UI box size (enlarge/shrink)" },
 			{ key: "Delete", desc: "Hover and press Delete to remove box" },
 			{ key: "Clear Text", desc: "Auto-deletes box when text is empty" },
@@ -1544,6 +1578,17 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			if (!this.autoAlign && modalSvg) this.clearAlignGuides(modalSvg);
 		});
 		actionGroup.appendChild(alignBtn);
+
+		const smartLayoutBtn = document.createElement("button");
+		smartLayoutBtn.type = "button";
+		smartLayoutBtn.className = "a1-svg-modal-tab-btn";
+		smartLayoutBtn.textContent = i18n.btnSmartLayout;
+		smartLayoutBtn.title = i18n.btnSmartLayoutTip;
+		smartLayoutBtn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			this.smartLayout(modalSvg);
+		});
+		actionGroup.appendChild(smartLayoutBtn);
 
 		if (relPath) {
 			const openInTabBtn = document.createElement("button");
