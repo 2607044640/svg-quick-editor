@@ -65,6 +65,8 @@ svg.a1-svg-hover-image,
   background: var(--background-secondary, #11131a);
   border-bottom: 1px solid var(--background-modifier-border, #2d3142);
   flex-shrink: 0;
+  position: relative;
+  z-index: 100;
 }
 .a1-svg-modal-title-row {
   display: flex;
@@ -72,6 +74,7 @@ svg.a1-svg-hover-image,
   gap: 14px;
   min-width: 0;
   flex-wrap: wrap;
+  overflow: visible;
 }
 .a1-svg-modal-title {
   font-size: 14px;
@@ -293,6 +296,7 @@ svg.a1-svg-hover-image,
   display: inline-flex;
   align-items: center;
   margin-left: 8px;
+  z-index: 100060;
 }
 .svg-help-icon {
   width: 18px;
@@ -340,7 +344,17 @@ svg.a1-svg-hover-image,
     transform 0.15s ease,
     visibility 0.15s ease;
 }
-.svg-help-wrap:hover .svg-help-popover {
+.svg-help-popover::before {
+  content: "";
+  position: absolute;
+  top: -10px;
+  left: 0;
+  right: 0;
+  height: 10px;
+}
+.svg-help-wrap:hover .svg-help-popover,
+.svg-help-icon:hover ~ .svg-help-popover,
+.svg-help-popover:hover {
   opacity: 1;
   visibility: visible;
   transform: translateY(0) scale(1);

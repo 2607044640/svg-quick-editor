@@ -2426,6 +2426,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     }
     const titleSpan = document.createElement("span");
     titleSpan.textContent = title;
+    titleDiv.appendChild(titleSpan);
     const isZh = getLocaleStrings().noticeUndo === "\u5DF2\u64A4\u9500";
     const helpWrap = document.createElement("div");
     helpWrap.className = "svg-help-wrap";

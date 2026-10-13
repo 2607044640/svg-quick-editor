@@ -1472,6 +1472,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 		const titleSpan = document.createElement("span");
 		titleSpan.textContent = title;
+		titleDiv.appendChild(titleSpan);
 		const isZh = (getLocaleStrings().noticeUndo === "已撤销");
 		const helpWrap = document.createElement("div");
 		helpWrap.className = "svg-help-wrap";
