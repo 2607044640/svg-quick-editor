@@ -1459,6 +1459,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		dialog.appendChild(body);
 		backdrop.appendChild(dialog);
 
+		let isConfirming = false;
 		const closeModal = () => {
 			this.clearHover();
 			backdrop.remove();
@@ -1471,7 +1472,28 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		};
 
 		const requestClose = () => {
+			if (isConfirming) return;
 			this.clearHover();
+			if (modalSvg && this.history.isDirty(modalSvg)) {
+				isConfirming = true;
+				this.promptSaveConfirmation(
+					async () => {
+						isConfirming = false;
+						await this.persistSvg(modalSvg);
+						this.history.markSaved(modalSvg);
+						closeModal();
+					},
+					() => {
+						isConfirming = false;
+						this.history.discard(modalSvg);
+						closeModal();
+					},
+					() => {
+						isConfirming = false;
+					}
+				);
+				return;
+			}
 			closeModal();
 		};
 
@@ -1496,7 +1518,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 				}
 				return;
 			}
-			if (e.key === "Escape" && !this.overlay) {
+			if (e.key === "Escape" && !this.overlay && !isConfirming) {
 				e.preventDefault();
 				requestClose();
 			}

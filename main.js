@@ -2308,6 +2308,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     dialog.appendChild(header);
     dialog.appendChild(body);
     backdrop.appendChild(dialog);
+    let isConfirming = false;
     const closeModal = () => {
       this.clearHover();
       backdrop.remove();
@@ -2320,7 +2321,29 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       window.removeEventListener("keydown", keyHandler);
     };
     const requestClose = () => {
+      if (isConfirming)
+        return;
       this.clearHover();
+      if (modalSvg && this.history.isDirty(modalSvg)) {
+        isConfirming = true;
+        this.promptSaveConfirmation(
+          async () => {
+            isConfirming = false;
+            await this.persistSvg(modalSvg);
+            this.history.markSaved(modalSvg);
+            closeModal();
+          },
+          () => {
+            isConfirming = false;
+            this.history.discard(modalSvg);
+            closeModal();
+          },
+          () => {
+            isConfirming = false;
+          }
+        );
+        return;
+      }
       closeModal();
     };
     closeBtn.addEventListener("click", requestClose);
@@ -2345,7 +2368,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
         }
         return;
       }
-      if (e.key === "Escape" && !this.overlay) {
+      if (e.key === "Escape" && !this.overlay && !isConfirming) {
         e.preventDefault();
         requestClose();
       }
