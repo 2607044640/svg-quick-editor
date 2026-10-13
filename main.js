@@ -842,156 +842,176 @@ function smartAutoLayout(svg) {
   const vbAttr = (svg.getAttribute("viewBox") || svg.getAttribute("viewbox") || "").trim().split(/[\s,]+/);
   const svgW = vbAttr.length === 4 ? parseFloat(vbAttr[2]) : num(svg.getAttribute("width")) || 800;
   const svgH = vbAttr.length === 4 ? parseFloat(vbAttr[3]) : num(svg.getAttribute("height")) || 600;
-  const allRects = Array.from(svg.querySelectorAll("rect")).filter((r) => {
-    if (r.hasAttribute("data-a1-align") || r.closest("[data-a1-align]"))
-      return false;
-    const w = num(r.getAttribute("width")) ?? 0;
-    const h = num(r.getAttribute("height")) ?? 0;
-    return w > 0 && h > 0;
-  });
-  const containerRects = allRects.filter((r) => {
-    const box = measureBox(r, svg);
-    if (!box)
-      return false;
+  const pad = 20;
+  const preferGap = 24;
+  const hidden = (el) => el.getAttribute("display") === "none" || !!el.closest("[data-a1-align]");
+  const isCanvas = (box) => {
     const w = box.right - box.left;
     const h = box.bottom - box.top;
-    const isCanvasBg = w >= svgW * 0.92 && h >= svgH * 0.92;
-    return w >= 220 && h >= 120 && !isCanvasBg;
+    return w >= svgW * 0.92 && h >= svgH * 0.92;
+  };
+  const boxOf = (el) => {
+    const box = measureBox(el, svg);
+    if (!box)
+      return null;
+    if (box.right - box.left < 48 || box.bottom - box.top < 20)
+      return null;
+    if (isCanvas(box))
+      return null;
+    return box;
+  };
+  const containsBox = (outer, inner) => {
+    const ow = outer.right - outer.left;
+    const oh = outer.bottom - outer.top;
+    const iw = inner.right - inner.left;
+    const ih = inner.bottom - inner.top;
+    if (ow * oh <= iw * ih * 1.12)
+      return false;
+    return inner.left >= outer.left - 1 && inner.right <= outer.right + 1 && inner.top >= outer.top - 1 && inner.bottom <= outer.bottom + 1;
+  };
+  const cardGroups = Array.from(svg.querySelectorAll("g")).filter((g) => {
+    if (hidden(g))
+      return false;
+    return g.querySelector("rect, circle, ellipse, path") !== null;
   });
-  const containers = [];
-  if (containerRects.length > 0) {
-    for (const cr of containerRects) {
-      const b = measureBox(cr, svg);
-      if (b)
-        containers.push({ bounds: b, rectEl: cr });
-    }
-  } else {
-    containers.push({
-      bounds: { left: 24, top: 24, right: svgW - 24, bottom: svgH - 24 }
-    });
+  const atomicGroups = cardGroups.filter((g) => !cardGroups.some((other) => other !== g && other.contains(g)));
+  const items = [];
+  for (const g of atomicGroups) {
+    const box = boxOf(g);
+    if (box)
+      items.push({ el: g, box });
   }
-  let totalChanged = false;
-  let totalCount = 0;
-  for (const { bounds: cBox, rectEl } of containers) {
-    const targets = collectAlignTargets(svg, rectEl ?? svg).filter((t) => {
-      if (rectEl && (t === rectEl || rectEl.contains(t))) {
-        if (t === rectEl)
-          return false;
-      }
-      const box = measureBox(t, svg);
-      if (!box)
-        return false;
-      const cx = (box.left + box.right) / 2;
-      const cy = (box.top + box.bottom) / 2;
-      return cx >= cBox.left && cx <= cBox.right && cy >= cBox.top && cy <= cBox.bottom;
-    });
-    if (targets.length === 0)
+  for (const r of Array.from(svg.querySelectorAll("rect"))) {
+    if (hidden(r))
       continue;
-    const itemElements = [];
-    for (const t of targets) {
-      const isChildOfOther = targets.some((other) => other !== t && other.contains(t));
-      if (!isChildOfOther) {
-        itemElements.push(t);
-      }
+    if (atomicGroups.some((g) => g.contains(r)))
+      continue;
+    const w = num(r.getAttribute("width")) ?? 0;
+    const h = num(r.getAttribute("height")) ?? 0;
+    if (w < 80 || h < 24)
+      continue;
+    const box = boxOf(r);
+    if (!box)
+      continue;
+    items.push({ el: r, box });
+  }
+  const cards = items.filter((a) => !items.some((b) => a !== b && (a.el.contains(b.el) || containsBox(a.box, b.box))));
+  if (cards.length === 0)
+    return { changed: false, count: 0 };
+  const centerIn = (box, item) => {
+    const cx = (item.box.left + item.box.right) / 2;
+    const cy = (item.box.top + item.box.bottom) / 2;
+    return cx >= box.left && cx <= box.right && cy >= box.top && cy <= box.bottom;
+  };
+  let frame = { left: pad, top: pad, right: svgW - pad, bottom: svgH - pad };
+  let frameArea = (frame.right - frame.left) * (frame.bottom - frame.top);
+  const considerFrame = (box) => {
+    if (!box || isCanvas(box))
+      return;
+    if (!cards.every((c) => centerIn(box, c)))
+      return;
+    const area = (box.right - box.left) * (box.bottom - box.top);
+    if (area < frameArea) {
+      frame = box;
+      frameArea = area;
     }
-    if (itemElements.length === 0)
+  };
+  for (const g of cardGroups) {
+    if (cards.some((c) => c.el === g))
       continue;
-    let headerBottom = cBox.top;
-    const contentItems = [];
-    for (const el of itemElements) {
+    if (!cards.every((c) => g.contains(c.el)))
+      continue;
+    considerFrame(measureBox(g, svg));
+  }
+  for (const r of Array.from(svg.querySelectorAll("rect"))) {
+    if (cards.some((c) => c.el === r || c.el.contains(r)))
+      continue;
+    considerFrame(measureBox(r, svg));
+  }
+  let headerBottom = frame.top;
+  for (const t of Array.from(svg.querySelectorAll("text"))) {
+    if (hidden(t) || cards.some((c) => c.el === t || c.el.contains(t)))
+      continue;
+    const box = measureBox(t, svg);
+    if (!box)
+      continue;
+    const aboveCards = box.bottom <= Math.min(...cards.map((c) => c.box.top)) + 4;
+    const inTopBand = box.top < frame.top + (frame.bottom - frame.top) * 0.35;
+    if (aboveCards || inTopBand)
+      headerBottom = Math.max(headerBottom, box.bottom);
+  }
+  const topLimit = Math.max(frame.top + pad, headerBottom + pad);
+  const bottomLimit = frame.bottom - pad;
+  const leftLimit = frame.left + pad;
+  const rightLimit = frame.right - pad;
+  const availH = bottomLimit - topLimit;
+  const availW = rightLimit - leftLimit;
+  if (availH <= 8 || availW <= 8)
+    return { changed: false, count: 0 };
+  const columns = [];
+  const sorted = [...cards].sort((a, b) => a.box.left - b.box.left || a.box.top - b.box.top);
+  for (const item of sorted) {
+    const iw = item.box.right - item.box.left;
+    const col = columns.find((group) => group.some((other) => {
+      const overlap = Math.min(item.box.right, other.box.right) - Math.max(item.box.left, other.box.left);
+      const narrow = Math.min(iw, other.box.right - other.box.left);
+      return overlap > narrow * 0.4;
+    }));
+    if (col)
+      col.push(item);
+    else
+      columns.push([item]);
+  }
+  const ridersOf = (item) => {
+    const riders = [];
+    for (const el of Array.from(svg.querySelectorAll("text, circle, ellipse"))) {
+      if (item.el.contains(el) || cards.some((c) => c.el === el))
+        continue;
       const box = measureBox(el, svg);
       if (!box)
         continue;
-      const name = localName(el);
-      const isPureText = name === "text" || name === "g" && !el.querySelector("rect") && el.querySelectorAll("text").length >= 1;
-      const isNearTop = box.top < cBox.top + (cBox.bottom - cBox.top) * 0.35;
-      if (isPureText && isNearTop) {
-        headerBottom = Math.max(headerBottom, box.bottom);
-      } else {
-        contentItems.push({ el, box });
+      const cx = (box.left + box.right) / 2;
+      const cy = (box.top + box.bottom) / 2;
+      if (cx >= item.box.left && cx <= item.box.right && cy >= item.box.top && cy <= item.box.bottom) {
+        riders.push(el);
       }
     }
-    if (contentItems.length === 0)
-      continue;
-    const sorted = [...contentItems].sort((a, b) => (a.box.left + a.box.right) / 2 - (b.box.left + b.box.right) / 2);
-    const columns = [];
-    for (const item of sorted) {
-      const itemCx = (item.box.left + item.box.right) / 2;
-      const itemW = item.box.right - item.box.left;
-      let placed = false;
-      for (const col of columns) {
-        const colCx = col.reduce((sum, it) => sum + (it.box.left + it.box.right) / 2, 0) / col.length;
-        if (Math.abs(itemCx - colCx) < Math.max(50, itemW * 0.35)) {
-          col.push(item);
-          placed = true;
-          break;
-        }
-      }
-      if (!placed) {
-        columns.push([item]);
-      }
+    return riders;
+  };
+  let totalChanged = false;
+  let totalCount = 0;
+  const slotW = availW / columns.length;
+  for (let ci = 0; ci < columns.length; ci++) {
+    const col = columns[ci].sort((a, b) => a.box.top - b.box.top);
+    const n = col.length;
+    const totalH = col.reduce((sum, it) => sum + (it.box.bottom - it.box.top), 0);
+    let gap = preferGap;
+    let startY = topLimit;
+    if (n === 1) {
+      startY = topLimit + Math.max(0, (availH - totalH) / 2);
+    } else if (availH > totalH) {
+      const span = totalH + (n - 1) * preferGap;
+      const leftover = availH - span;
+      startY = leftover <= 80 ? topLimit + leftover / 2 : topLimit;
+    } else {
+      gap = Math.max(8, (availH - totalH) / (n - 1));
+      startY = topLimit;
     }
-    const topLimit = Math.max(cBox.top + 16, headerBottom + 16);
-    const bottomLimit = cBox.bottom - 16;
-    const availH = bottomLimit - topLimit;
-    if (availH <= 0)
-      continue;
-    for (const col of columns) {
-      col.sort((a, b) => a.box.top - b.box.top);
-      const N = col.length;
-      if (N === 0)
-        continue;
-      const totalItemH = col.reduce((sum, it) => sum + (it.box.bottom - it.box.top), 0);
-      let startY = topLimit;
-      let gap = 20;
-      if (N === 1) {
-        const it = col[0];
-        const itemH = it.box.bottom - it.box.top;
-        const itemW = it.box.right - it.box.left;
-        const targetY = topLimit + (availH - itemH) / 2;
-        const colCenter2 = (cBox.left + cBox.right) / 2;
-        const targetX = colCenter2 - itemW / 2;
-        const dy = targetY - it.box.top;
-        const dx = targetX - it.box.left;
-        if (Math.abs(dy) > 1 || Math.abs(dx) > 1) {
-          nudge(it.el, dx, dy);
-          totalChanged = true;
-          totalCount++;
-        }
-        continue;
+    const slotCenter = leftLimit + ci * slotW + slotW / 2;
+    let curY = startY;
+    for (const it of col) {
+      const itemH = it.box.bottom - it.box.top;
+      const itemW = it.box.right - it.box.left;
+      const dx = slotCenter - itemW / 2 - it.box.left;
+      const dy = curY - it.box.top;
+      if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+        nudge(it.el, dx, dy);
+        for (const rider of ridersOf(it))
+          nudge(rider, dx, dy);
+        totalChanged = true;
+        totalCount++;
       }
-      if (availH > totalItemH) {
-        const equalGap = (availH - totalItemH) / (N + 1);
-        if (equalGap >= 12 && equalGap <= 42) {
-          gap = equalGap;
-          const span = totalItemH + (N - 1) * gap;
-          startY = topLimit + (availH - span) / 2;
-        } else if (equalGap > 42) {
-          gap = 26;
-          const span = totalItemH + (N - 1) * gap;
-          startY = topLimit + (availH - span) / 2;
-        } else {
-          gap = Math.max(8, (availH - totalItemH) / (N - 1));
-          const span = totalItemH + (N - 1) * gap;
-          startY = topLimit + Math.max(0, (availH - span) / 2);
-        }
-      }
-      const colCenter = columns.length === 1 ? (cBox.left + cBox.right) / 2 : col.reduce((sum, it) => sum + (it.box.left + it.box.right) / 2, 0) / N;
-      let curY = startY;
-      for (const it of col) {
-        const itemH = it.box.bottom - it.box.top;
-        const itemW = it.box.right - it.box.left;
-        const targetY = curY;
-        const targetX = colCenter - itemW / 2;
-        const dy = targetY - it.box.top;
-        const dx = targetX - it.box.left;
-        if (Math.abs(dy) > 1 || Math.abs(dx) > 1) {
-          nudge(it.el, dx, dy);
-          totalChanged = true;
-          totalCount++;
-        }
-        curY += itemH + gap;
-      }
+      curY += itemH + gap;
     }
   }
   return { changed: totalChanged, count: totalCount };

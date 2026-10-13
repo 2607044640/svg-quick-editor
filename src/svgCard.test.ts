@@ -766,6 +766,64 @@ describe("smartAutoLayout", () => {
 		expect(y).toBeGreaterThan(150);
 	});
 
+	it("packs bare stacked cards under a title when there is no outer container", () => {
+		const { svg } = doc(`
+<svg viewBox="0 0 900 560">
+  <rect id="bg" width="900" height="560" fill="#0b1220"></rect>
+  <text id="title" x="48" y="64" font-size="28">任务效率</text>
+  <g id="c1" transform="translate(40 220)">
+    <rect width="820" height="56" rx="12"></rect>
+    <text x="24" y="34">一次只 Focus 1 件大任务</text>
+  </g>
+  <g id="c2" transform="translate(40 300)">
+    <rect width="820" height="56" rx="12"></rect>
+    <text x="24" y="34">标题为主目标</text>
+  </g>
+  <g id="c3" transform="translate(40 380)">
+    <rect width="820" height="56" rx="12"></rect>
+    <text x="24" y="34">简单任务使用轻量快速 AI</text>
+  </g>
+</svg>`);
+		const res = smartAutoLayout(svg);
+		expect(res.changed).toBe(true);
+		expect(res.count).toBe(3);
+
+		const yOf = (id: string) => {
+			const tr = svg.querySelector("#" + id)!.getAttribute("transform")!;
+			const m = tr.match(/translate\(\s*([-\d.]+)\s*[ ,]\s*([-\d.]+)\s*\)/);
+			return parseFloat(m![2]);
+		};
+		const y1 = yOf("c1");
+		const y2 = yOf("c2");
+		const y3 = yOf("c3");
+		expect(y1).toBeGreaterThanOrEqual(80);
+		expect(y1).toBeLessThan(220);
+		expect(y2).toBeGreaterThan(y1 + 56);
+		expect(y3).toBeGreaterThan(y2 + 56);
+		const gap1 = y2 - (y1 + 56);
+		const gap2 = y3 - (y2 + 56);
+		expect(Math.abs(gap1 - gap2)).toBeLessThanOrEqual(1);
+		expect(svg.querySelector("#title")!.getAttribute("x")).toBe("48");
+		expect(svg.querySelector("#title")!.getAttribute("y")).toBe("64");
+	});
+
+	it("does not treat sibling cards as containers of each other", () => {
+		const { svg } = doc(`
+<svg viewBox="0 0 400 500">
+  <g id="a" transform="translate(20 300)"><rect width="360" height="60"></rect><text x="10" y="30">A</text></g>
+  <g id="b" transform="translate(20 380)"><rect width="360" height="60"></rect><text x="10" y="30">B</text></g>
+</svg>`);
+		const res = smartAutoLayout(svg);
+		expect(res.changed).toBe(true);
+		expect(res.count).toBe(2);
+		const yOf = (id: string) => {
+			const tr = svg.querySelector("#" + id)!.getAttribute("transform")!;
+			return parseFloat(tr.match(/translate\(\s*([-\d.]+)\s*[ ,]\s*([-\d.]+)\s*\)/)![2]);
+		};
+		expect(yOf("a")).toBeLessThan(300);
+		expect(yOf("b")).toBeGreaterThan(yOf("a") + 60);
+	});
+
 	it("supports undo and redo seamlessly via SvgHistoryManager", () => {
 		const { svg } = doc(SVG_STACK);
 		const history = new SvgHistoryManager();
