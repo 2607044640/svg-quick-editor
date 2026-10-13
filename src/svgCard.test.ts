@@ -824,6 +824,29 @@ describe("smartAutoLayout", () => {
 		expect(yOf("b")).toBeGreaterThan(yOf("a") + 60);
 	});
 
+	it("leaves an already even stack alone and never covers a baseline title", () => {
+		const { document } = parseHTML(`<!doctype html><body></body>`);
+		document.body.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 480">
+  <rect width="780" height="480" rx="16"></rect>
+  <g id="header" transform="translate(36, 40)">
+    <text x="0" y="0" fill="#38bdf8" font-size="20">急性干预 · 恢复心流</text>
+    <text x="510" y="0" fill="#94a3b8" font-size="12">原则：先阻断情绪恶化，再点火理性</text>
+  </g>
+  <g id="r1" transform="translate(36, 62)"><rect width="708" height="54" rx="10"></rect><text x="120" y="32" font-size="14">row</text></g>
+  <g id="r2" transform="translate(36, 128)"><rect width="708" height="54"></rect><text x="120" y="32">row</text></g>
+  <g id="r3" transform="translate(36, 194)"><rect width="708" height="54"></rect><text x="120" y="32">row</text></g>
+  <g id="r4" transform="translate(36, 260)"><rect width="708" height="54"></rect><text x="120" y="32">row</text></g>
+  <g id="r5" transform="translate(36, 326)"><rect width="708" height="54"></rect><text x="120" y="32">row</text></g>
+  <g id="r6" transform="translate(36, 392)"><rect width="708" height="54"></rect><text x="120" y="32">row</text></g>
+</svg>`;
+		const svg = document.querySelector("svg")!;
+		const before = Array.from(svg.querySelectorAll("g[id^='r']")).map((g) => g.getAttribute("transform"));
+		const res = smartAutoLayout(svg);
+		expect(res.changed).toBe(false);
+		expect(svg.querySelector("#header")!.getAttribute("transform")).toBe("translate(36, 40)");
+		expect(Array.from(svg.querySelectorAll("g[id^='r']")).map((g) => g.getAttribute("transform"))).toEqual(before);
+	});
+
 	it("supports undo and redo seamlessly via SvgHistoryManager", () => {
 		const { svg } = doc(SVG_STACK);
 		const history = new SvgHistoryManager();

@@ -658,12 +658,13 @@ function measureBox(el, svg) {
       const origin = ancestorTranslate(t, svg);
       const tx = coords.x + origin.x;
       const ty = coords.y + origin.y;
-      const approxW = Math.max(20, (t.textContent?.length || 5) * 12);
-      const approxH = 16;
+      const fontSize = num(t.getAttribute("font-size")) ?? 16;
+      const descent = fontSize * 0.25;
+      const approxW = Math.max(20, (t.textContent?.length || 5) * fontSize * 0.6);
       left = Math.min(left, tx);
-      top = Math.min(top, ty - approxH);
+      top = Math.min(top, ty - fontSize);
       right = Math.max(right, tx + approxW);
-      bottom = Math.max(bottom, ty);
+      bottom = Math.max(bottom, ty + descent);
     }
   }
   if (!Number.isFinite(left))
@@ -929,16 +930,23 @@ function smartAutoLayout(svg) {
     considerFrame(measureBox(r, svg));
   }
   let headerBottom = frame.top;
+  const topBand = frame.top + (frame.bottom - frame.top) * 0.4;
+  const noteHeader = (box) => {
+    if (!box || box.top > topBand)
+      return;
+    headerBottom = Math.max(headerBottom, box.bottom);
+  };
+  for (const g of Array.from(svg.querySelectorAll("g"))) {
+    if (hidden(g) || cards.some((c) => c.el === g || c.el.contains(g) || g.contains(c.el)))
+      continue;
+    if (!g.querySelector("text") || g.querySelector("rect"))
+      continue;
+    noteHeader(measureBox(g, svg));
+  }
   for (const t of Array.from(svg.querySelectorAll("text"))) {
     if (hidden(t) || cards.some((c) => c.el === t || c.el.contains(t)))
       continue;
-    const box = measureBox(t, svg);
-    if (!box)
-      continue;
-    const aboveCards = box.bottom <= Math.min(...cards.map((c) => c.box.top)) + 4;
-    const inTopBand = box.top < frame.top + (frame.bottom - frame.top) * 0.35;
-    if (aboveCards || inTopBand)
-      headerBottom = Math.max(headerBottom, box.bottom);
+    noteHeader(measureBox(t, svg));
   }
   const topLimit = Math.max(frame.top + pad, headerBottom + pad);
   const bottomLimit = frame.bottom - pad;
@@ -998,6 +1006,14 @@ function smartAutoLayout(svg) {
       startY = topLimit;
     }
     const slotCenter = leftLimit + ci * slotW + slotW / 2;
+    const gaps = col.slice(1).map((it, i) => it.box.top - col[i].box.bottom);
+    const gapSpread = gaps.length === 0 ? 0 : Math.max(...gaps) - Math.min(...gaps);
+    const above = col[0].box.top - headerBottom;
+    const below = frame.bottom - col[col.length - 1].box.bottom;
+    const centeredX = Math.abs((col[0].box.left + col[0].box.right) / 2 - slotCenter) <= 8;
+    const finished = gapSpread <= 4 && gaps.every((g) => g >= 8) && above >= 8 && below >= 8 && above - below <= 40 && centeredX;
+    if (finished)
+      continue;
     let curY = startY;
     for (const it of col) {
       const itemH = it.box.bottom - it.box.top;
