@@ -1,6 +1,6 @@
 import { parseHTML } from "linkedom";
 import { describe, expect, it } from "vitest";
-import { cloneCard, collectAlignTargets, commitText, findCard, findTextInCard, insertCloneSibling, nudge, resetCloneSeq, resolveCloneTarget, resolveDeleteTarget, resolveHit, serializeSvg, snapDelta } from "./svgCard";
+import { cloneCard, collectAlignTargets, commitText, findCard, findTextInCard, insertCloneSibling, nudge, resetCloneSeq, resolveCloneTarget, resolveDeleteTarget, resolveHit, resolveScaleTarget, scaleCard, serializeSvg, snapDelta } from "./svgCard";
 import { ensureMarker, findSvgSpans, matchSpan, spliceSvg } from "./svgSource";
 import { SvgHistoryManager } from "./svgHistory";
 
@@ -640,6 +640,55 @@ describe("resolveDeleteTarget", () => {
 		const res = resolveDeleteTarget(rectA);
 		expect(res).not.toBeNull();
 		expect(res!.element.id).toBe("chip-a");
+	});
+});
+
+describe("scaleCard & resolveScaleTarget", () => {
+	it("resolves the targeted card for scaling", () => {
+		const { svg } = doc(CHIP);
+		const text = svg.querySelector("text")!;
+		const res = resolveScaleTarget(text);
+		expect(res).not.toBeNull();
+		expect(res!.element.id).toBe("row");
+		expect(res!.svg).toBe(svg);
+	});
+
+	it("never resolves full canvas background rect for scaling", () => {
+		const { svg } = doc(`<svg viewBox="0 0 1000 800">
+			<rect id="bg" width="1000" height="800" fill="#fff"></rect>
+			<g id="box"><rect x="10" y="10" width="100" height="40"></rect></g>
+		</svg>`);
+		expect(resolveScaleTarget(svg.querySelector("#bg")!)).toBeNull();
+	});
+
+	it("scales a card around its center and creates clean transform", () => {
+		const { svg } = doc(CHIP);
+		const card = svg.querySelector("#row")!;
+		const res1 = scaleCard(card, svg, 1.1);
+		expect(res1).not.toBeNull();
+		expect(res1!.scale).toBeCloseTo(1.1);
+		const tr1 = card.getAttribute("transform");
+		expect(tr1).toContain("scale(1.1)");
+		expect(tr1).toContain("translate(");
+
+		// Multiple scalings
+		const res2 = scaleCard(card, svg, 1.1);
+		expect(res2).not.toBeNull();
+		expect(res2!.scale).toBeCloseTo(1.21);
+		const tr2 = card.getAttribute("transform");
+		expect(tr2).toContain("scale(1.21)");
+	});
+
+	it("preserves scale when nudging card position", () => {
+		const { svg } = doc(CHIP);
+		const card = svg.querySelector("#row")!;
+		scaleCard(card, svg, 1.2);
+		expect(card.getAttribute("transform")).toContain("scale(1.2)");
+
+		nudge(card, 20, 10);
+		const tr = card.getAttribute("transform")!;
+		expect(tr).toContain("scale(1.2)");
+		expect(tr).toContain("translate(");
 	});
 });
 

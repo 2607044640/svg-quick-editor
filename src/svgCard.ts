@@ -219,6 +219,40 @@ export function resolveDeleteTarget(target: Element, clientX?: number, clientY?:
 }
 
 /**
+ * Resolves what element should be scaled when user scrolls Ctrl+wheel over an element:
+ * - If target is a small box / chip / text, scales that small box / text.
+ * - If target is an outer card background or border, scales the card group.
+ * - Never scales the root <svg>, <defs>, <style>, [data-a1-align], or canvas-filling background rect.
+ */
+export function resolveScaleTarget(target: Element, clientX?: number, clientY?: number): { element: Element; svg: SVGSVGElement } | null {
+	if (!target) return null;
+	const hasInstanceOf = "instanceOf" in target && typeof (target as { instanceOf?: (cls: unknown) => boolean }).instanceOf === "function";
+	const isSvgRoot = (hasInstanceOf ? (target as { instanceOf: (cls: unknown) => boolean }).instanceOf(SVGSVGElement) : false) || localName(target) === "svg";
+	if (isSvgRoot) return null;
+
+	const svg = (target.ownerSVGElement ?? target.closest("svg")) as SVGSVGElement | null;
+	if (!svg) return null;
+
+	// Never scale align guides, overlay UI, defs, or style
+	if (target.closest("[data-a1-align], .a1-svg-edit, defs, style, marker")) return null;
+
+	// Do not scale canvas-sized background rect
+	if (localName(target) === "rect" && !isCardSizedRect(target, svg)) {
+		return null;
+	}
+
+	const resolved = resolveCloneTarget(target, clientX, clientY);
+	if (!resolved || resolved === svg) return null;
+
+	const name = localName(resolved);
+	if (name === "svg" || name === "defs" || name === "style" || name === "marker") {
+		return null;
+	}
+
+	return { element: resolved, svg };
+}
+
+/**
  * Card = the box that should disappear with this sentence.
  * 1. Ancestor (or self) with data-a1-card.
  * 2. Nearest <g> that contains exactly one <text> (a single-sentence chip).
@@ -473,6 +507,14 @@ export function nudge(el: Element, dx: number, dy: number): void {
 	const name = localName(el);
 	if (name === "g" || name === "svg" || name === "use" || name === "path" || name === "polygon" || name === "polyline" || el.hasAttribute("transform")) {
 		const prev = el.getAttribute("transform") ?? "";
+		const transMatch = prev.match(/translate\(\s*([-\d.eE+]+)(?:[\s,]+([-\d.eE+]+))?\s*\)(?=\s*(?:scale\([^)]*\)|\s*$))/);
+		if (transMatch && transMatch.index != null) {
+			const x = parseFloat(transMatch[1]) + dx;
+			const y = (transMatch[2] != null ? parseFloat(transMatch[2]) : 0) + dy;
+			const newTrans = `translate(${trimNum(x)} ${trimNum(y)})`;
+			el.setAttribute("transform", prev.slice(0, transMatch.index) + newTrans + prev.slice(transMatch.index + transMatch[0].length));
+			return;
+		}
 		const m = prev.match(/translate\(\s*([-\d.eE+]+)(?:[\s,]+([-\d.eE+]+))?\s*\)\s*$/);
 		if (m) {
 			const x = parseFloat(m[1]) + dx;
@@ -497,6 +539,76 @@ export function nudge(el: Element, dx: number, dy: number): void {
 			shiftAttr(tspan, "y", dy);
 		}
 	}
+}
+
+export function getElementCenter(el: Element, svg: Element): { x: number; y: number } {
+	if (typeof (el as any).getBBox === "function") {
+		try {
+			const bb = (el as any).getBBox();
+			if (bb && (bb.width > 0 || bb.height > 0)) {
+				return { x: bb.x + bb.width / 2, y: bb.y + bb.height / 2 };
+			}
+		} catch {}
+	}
+	const m = measureBox(el, svg);
+	if (m) {
+		return { x: (m.left + m.right) / 2, y: (m.top + m.bottom) / 2 };
+	}
+	const x = num(el.getAttribute("x")) ?? num(el.getAttribute("cx")) ?? 0;
+	const y = num(el.getAttribute("y")) ?? num(el.getAttribute("cy")) ?? 0;
+	return { x, y };
+}
+
+/**
+ * Scale an element uniformly around its center.
+ * Preserves existing translation and other transform components.
+ * Returns the resulting scale factor.
+ */
+export function scaleCard(el: Element, svg: Element, factor: number): { scale: number } | null {
+	const prev = el.getAttribute("transform") ?? "";
+
+	let curScale = 1;
+	let curTx = 0;
+	let curTy = 0;
+
+	// Match current scale
+	const scaleMatch = prev.match(/scale\(\s*([-\d.eE+]+)(?:[\s,]+([-\d.eE+]+))?\s*\)/);
+	if (scaleMatch) {
+		curScale = parseFloat(scaleMatch[1]) || 1;
+	}
+
+	// Match current translate
+	const transMatch = prev.match(/translate\(\s*([-\d.eE+]+)(?:[\s,]+([-\d.eE+]+))?\s*\)/);
+	if (transMatch) {
+		curTx = parseFloat(transMatch[1]) || 0;
+		curTy = transMatch[2] != null ? parseFloat(transMatch[2]) : 0;
+	}
+
+	const rawNewScale = curScale * factor;
+	// Clamp scale between 0.15 (15%) and 6.0 (600%)
+	const newScale = Math.min(6.0, Math.max(0.15, rawNewScale));
+	const actualFactor = newScale / curScale;
+	if (Math.abs(actualFactor - 1) < 0.0001) {
+		return { scale: curScale };
+	}
+
+	// Center of element in parent coordinates
+	const center = getElementCenter(el, svg);
+
+	// Invariance formula: C' = actualFactor * t + (1 - actualFactor) * C
+	const newTx = actualFactor * curTx + (1 - actualFactor) * center.x;
+	const newTy = actualFactor * curTy + (1 - actualFactor) * center.y;
+
+	// Strip out old translate and scale to cleanly reassemble
+	const otherTransforms = prev
+		.replace(/translate\(\s*[^)]+\)/g, "")
+		.replace(/scale\(\s*[^)]+\)/g, "")
+		.trim();
+
+	const newTransform = `translate(${trimNum(newTx)} ${trimNum(newTy)}) scale(${trimNum(newScale)})${otherTransforms ? " " + otherTransforms : ""}`;
+	el.setAttribute("transform", newTransform.trim());
+
+	return { scale: newScale };
 }
 
 function shiftAttr(el: Element, attr: string, delta: number): void {

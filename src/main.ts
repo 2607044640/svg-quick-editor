@@ -1,5 +1,5 @@
 import { App, MarkdownView, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile } from "obsidian";
-import { asText, cloneCard, commitText, findTextInCard, insertCloneSibling, nudge, readText, resolveCloneTarget, resolveDeleteTarget, resolveHit, serializeSvg, snapDelta, type AlignGuide, type TextHit } from "./svgCard";
+import { asText, cloneCard, commitText, findTextInCard, insertCloneSibling, nudge, readText, resolveCloneTarget, resolveDeleteTarget, resolveHit, resolveScaleTarget, scaleCard, serializeSvg, snapDelta, type AlignGuide, type TextHit } from "./svgCard";
 import { openTextOverlay, type OverlayHandle } from "./editorOverlay";
 import { ensureMarker, matchSpan, spliceSvg } from "./svgSource";
 import { SvgHistoryManager } from "./svgHistory";
@@ -282,6 +282,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		this.registerDomEvent(window, "pointerdown", (evt) => this.onPointerDown(evt), { capture: true });
 		this.registerDomEvent(window, "pointerup", (evt) => this.onPointerUp(evt), { capture: true });
 		this.registerDomEvent(window, "keydown", (evt) => this.onKeyDown(evt), { capture: true });
+		this.registerDomEvent(window, "wheel", (evt) => this.onWheel(evt), { capture: true, passive: false } as any);
 		this.registerDomEvent(window, "dblclick", (evt) => {
 			if (evt.shiftKey || evt.altKey) return;
 			const text = this.textFromEvent(evt) ?? (evt.target instanceof Element ? findTextInCard(evt.target, evt.clientX, evt.clientY) : null);
@@ -546,6 +547,49 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 		const isZh = (getLocaleStrings().noticeUndo === "已撤销");
 		this.showSaveToast(isZh ? "已删除 UI 框 (Ctrl+Z 可撤销)" : "UI box deleted (Ctrl+Z to undo)");
+		return true;
+	}
+
+	private onWheel(evt: WheelEvent): void {
+		if (!evt.ctrlKey && !evt.metaKey) return;
+		if (this.overlay) return;
+
+		const factor = evt.deltaY < 0 ? 1.08 : 0.92;
+		if (this.scaleHoveredBox(factor)) {
+			evt.preventDefault();
+			evt.stopPropagation();
+			evt.stopImmediatePropagation();
+		}
+	}
+
+	public scaleHoveredBox(factor: number): boolean {
+		if (this.overlay) return false;
+		const activeTag = document.activeElement?.tagName?.toLowerCase();
+		if (activeTag === "input" || activeTag === "textarea" || (document.activeElement as HTMLElement)?.isContentEditable) {
+			return false;
+		}
+
+		const el = (this.lastPointerX > 0 || this.lastPointerY > 0)
+			? document.elementFromPoint(this.lastPointerX, this.lastPointerY)
+			: null;
+		const candidate = this.hovered ?? el ?? this.hoveredSvgTarget;
+		if (!candidate) return false;
+
+		const scaleTarget = resolveScaleTarget(candidate, this.lastPointerX, this.lastPointerY);
+		if (!scaleTarget || !this.isInteractiveSvg(scaleTarget.svg)) return false;
+
+		this.history.recordSnapshot(scaleTarget.svg);
+		const res = scaleCard(scaleTarget.element, scaleTarget.svg, factor);
+		if (!res) return false;
+
+		const inModal = !!scaleTarget.svg.closest(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body");
+		if (!inModal) {
+			void this.persistSvg(scaleTarget.svg);
+		}
+
+		const pct = Math.round(res.scale * 100);
+		const isZh = (getLocaleStrings().noticeUndo === "已撤销");
+		this.showSaveToast(isZh ? `UI 大小: ${pct}% (Ctrl+Z 可撤销)` : `UI Scale: ${pct}% (Ctrl+Z to undo)`);
 		return true;
 	}
 
@@ -1442,6 +1486,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 		const shortcuts = isZh ? [
 			{ key: "Ctrl+S", desc: "即时保存 (保留撤销记录)" },
+			{ key: "Ctrl+滚轮", desc: "缩放UI框大小 (增大/减小)" },
 			{ key: "Delete", desc: "悬浮UI框按键直接删除" },
 			{ key: "清空文本", desc: "清空文字自动删除UI框" },
 			{ key: "Shift+拖拽", desc: "移动UI框" },
@@ -1450,6 +1495,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			{ key: "双击 / F2", desc: "快速编辑文字" },
 		] : [
 			{ key: "Ctrl+S", desc: "Save in-place (keeps history)" },
+			{ key: "Ctrl+Scroll", desc: "Scale UI box size (enlarge/shrink)" },
 			{ key: "Delete", desc: "Hover and press Delete to remove box" },
 			{ key: "Clear Text", desc: "Auto-deletes box when text is empty" },
 			{ key: "Shift+Drag", desc: "Move UI box" },
