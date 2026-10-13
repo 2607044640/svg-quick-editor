@@ -157,6 +157,41 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 	private currentModalTitle: string | null = null;
 	private currentModalBody: HTMLElement | null = null;
 	private currentModalSvg: SVGSVGElement | null = null;
+	private toastTimer: any = null;
+	private activeToastEl: HTMLElement | null = null;
+
+	public showSaveToast(message?: string): void {
+		const text = message || getLocaleStrings().noticeSaved("SVG");
+		if (this.activeToastEl) {
+			this.activeToastEl.remove();
+			this.activeToastEl = null;
+		}
+		if (this.toastTimer) {
+			clearTimeout(this.toastTimer);
+			this.toastTimer = null;
+		}
+
+		const toast = document.createElement("div");
+		toast.className = "a1-svg-toast";
+		toast.innerHTML = `
+			<svg class="a1-svg-toast-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+				<path d="M20 6L9 17l-5-5"/>
+			</svg>
+			<span>${text}</span>
+		`;
+		document.body.appendChild(toast);
+		this.activeToastEl = toast;
+
+		this.toastTimer = setTimeout(() => {
+			toast.classList.add("is-fading");
+			setTimeout(() => {
+				toast.remove();
+				if (this.activeToastEl === toast) {
+					this.activeToastEl = null;
+				}
+			}, 250);
+		}, 2200);
+	}
 
 	public getAutoAlign(): boolean {
 		return this.autoAlign;
@@ -416,7 +451,9 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 		// 3. Save (Ctrl+S / Cmd+S): Directly overwrite local file, keeping Ctrl+Z/Y history
 		if ((evt.ctrlKey || evt.metaKey) && !evt.altKey && !evt.shiftKey && (evt.key === "s" || evt.key === "S")) {
-			const activeSvg = this.history.getActiveSvg();
+			const activeSvg = this.history.getActiveSvg() ??
+				this.currentModalSvg ??
+				(document.querySelector(".a1-svg-modal-body svg, .svg-lightbox-content svg") as SVGSVGElement | null);
 			if (activeSvg) {
 				evt.preventDefault();
 				evt.stopPropagation();
@@ -479,10 +516,16 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 	}
 
 	public async saveCurrentSvg(svg?: SVGSVGElement | null, keepHistory = false): Promise<void> {
-		const target = svg ?? this.history.getActiveSvg();
+		const target = svg ??
+			this.history.getActiveSvg() ??
+			this.currentModalSvg ??
+			(document.querySelector(".a1-svg-modal-body svg, .svg-lightbox-content svg") as SVGSVGElement | null);
 		if (!target) return;
 		await this.persistSvg(target);
 		this.history.markSaved(target, keepHistory);
+		const svgPath = target.getAttribute(SVG_PATH_ATTR) || this.currentModalPath;
+		const name = svgPath ? (svgPath.split("/").pop() || "SVG") : "SVG";
+		this.showSaveToast(getLocaleStrings().noticeSaved(name));
 	}
 
 	public discardCurrentSvg(svg?: SVGSVGElement | null): void {
@@ -1395,7 +1438,6 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		dialog.appendChild(body);
 		backdrop.appendChild(dialog);
 
-		let isConfirming = false;
 		const closeModal = () => {
 			this.clearHover();
 			backdrop.remove();
@@ -1408,28 +1450,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		};
 
 		const requestClose = () => {
-			if (isConfirming) return;
 			this.clearHover();
-			if (modalSvg && this.history.isDirty(modalSvg)) {
-				isConfirming = true;
-				this.promptSaveConfirmation(
-					async () => {
-						isConfirming = false;
-						await this.persistSvg(modalSvg);
-						this.history.markSaved(modalSvg);
-						closeModal();
-					},
-					() => {
-						isConfirming = false;
-						this.history.discard(modalSvg);
-						closeModal();
-					},
-					() => {
-						isConfirming = false;
-					}
-				);
-				return;
-			}
 			closeModal();
 		};
 
@@ -1454,7 +1475,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 				}
 				return;
 			}
-			if (e.key === "Escape" && !this.overlay && !isConfirming) {
+			if (e.key === "Escape" && !this.overlay) {
 				e.preventDefault();
 				requestClose();
 			}
