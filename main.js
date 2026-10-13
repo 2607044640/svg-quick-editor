@@ -212,6 +212,30 @@ function resolveDeleteTarget(target, clientX, clientY) {
   }
   return { element: resolved, svg };
 }
+function resolveScaleTarget(target, clientX, clientY) {
+  if (!target)
+    return null;
+  const hasInstanceOf = "instanceOf" in target && typeof target.instanceOf === "function";
+  const isSvgRoot = (hasInstanceOf ? target.instanceOf(SVGSVGElement) : false) || localName(target) === "svg";
+  if (isSvgRoot)
+    return null;
+  const svg = target.ownerSVGElement ?? target.closest("svg");
+  if (!svg)
+    return null;
+  if (target.closest("[data-a1-align], .a1-svg-edit, defs, style, marker"))
+    return null;
+  if (localName(target) === "rect" && !isCardSizedRect(target, svg)) {
+    return null;
+  }
+  const resolved = resolveCloneTarget(target, clientX, clientY);
+  if (!resolved || resolved === svg)
+    return null;
+  const name = localName(resolved);
+  if (name === "svg" || name === "defs" || name === "style" || name === "marker") {
+    return null;
+  }
+  return { element: resolved, svg };
+}
 function findCard(textEl) {
   const textRoot = localName(textEl) === "tspan" ? textEl.closest("text") ?? textEl : textEl;
   let node = textRoot;
@@ -415,6 +439,14 @@ function nudge(el, dx, dy) {
   const name = localName(el);
   if (name === "g" || name === "svg" || name === "use" || name === "path" || name === "polygon" || name === "polyline" || el.hasAttribute("transform")) {
     const prev = el.getAttribute("transform") ?? "";
+    const transMatch = prev.match(/translate\(\s*([-\d.eE+]+)(?:[\s,]+([-\d.eE+]+))?\s*\)(?=\s*(?:scale\([^)]*\)|\s*$))/);
+    if (transMatch && transMatch.index != null) {
+      const x = parseFloat(transMatch[1]) + dx;
+      const y = (transMatch[2] != null ? parseFloat(transMatch[2]) : 0) + dy;
+      const newTrans = `translate(${trimNum(x)} ${trimNum(y)})`;
+      el.setAttribute("transform", prev.slice(0, transMatch.index) + newTrans + prev.slice(transMatch.index + transMatch[0].length));
+      return;
+    }
     const m = prev.match(/translate\(\s*([-\d.eE+]+)(?:[\s,]+([-\d.eE+]+))?\s*\)\s*$/);
     if (m) {
       const x = parseFloat(m[1]) + dx;
@@ -439,6 +471,52 @@ function nudge(el, dx, dy) {
       shiftAttr(tspan, "y", dy);
     }
   }
+}
+function getElementCenter(el, svg) {
+  if (typeof el.getBBox === "function") {
+    try {
+      const bb = el.getBBox();
+      if (bb && (bb.width > 0 || bb.height > 0)) {
+        return { x: bb.x + bb.width / 2, y: bb.y + bb.height / 2 };
+      }
+    } catch {
+    }
+  }
+  const m = measureBox(el, svg);
+  if (m) {
+    return { x: (m.left + m.right) / 2, y: (m.top + m.bottom) / 2 };
+  }
+  const x = num(el.getAttribute("x")) ?? num(el.getAttribute("cx")) ?? 0;
+  const y = num(el.getAttribute("y")) ?? num(el.getAttribute("cy")) ?? 0;
+  return { x, y };
+}
+function scaleCard(el, svg, factor) {
+  const prev = el.getAttribute("transform") ?? "";
+  let curScale = 1;
+  let curTx = 0;
+  let curTy = 0;
+  const scaleMatch = prev.match(/scale\(\s*([-\d.eE+]+)(?:[\s,]+([-\d.eE+]+))?\s*\)/);
+  if (scaleMatch) {
+    curScale = parseFloat(scaleMatch[1]) || 1;
+  }
+  const transMatch = prev.match(/translate\(\s*([-\d.eE+]+)(?:[\s,]+([-\d.eE+]+))?\s*\)/);
+  if (transMatch) {
+    curTx = parseFloat(transMatch[1]) || 0;
+    curTy = transMatch[2] != null ? parseFloat(transMatch[2]) : 0;
+  }
+  const rawNewScale = curScale * factor;
+  const newScale = Math.min(6, Math.max(0.15, rawNewScale));
+  const actualFactor = newScale / curScale;
+  if (Math.abs(actualFactor - 1) < 1e-4) {
+    return { scale: curScale };
+  }
+  const center = getElementCenter(el, svg);
+  const newTx = actualFactor * curTx + (1 - actualFactor) * center.x;
+  const newTy = actualFactor * curTy + (1 - actualFactor) * center.y;
+  const otherTransforms = prev.replace(/translate\(\s*[^)]+\)/g, "").replace(/scale\(\s*[^)]+\)/g, "").trim();
+  const newTransform = `translate(${trimNum(newTx)} ${trimNum(newTy)}) scale(${trimNum(newScale)})${otherTransforms ? " " + otherTransforms : ""}`;
+  el.setAttribute("transform", newTransform.trim());
+  return { scale: newScale };
 }
 function shiftAttr(el, attr, delta) {
   if (delta === 0 || !el.hasAttribute(attr))
@@ -1276,6 +1354,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     this.registerDomEvent(window, "pointerdown", (evt) => this.onPointerDown(evt), { capture: true });
     this.registerDomEvent(window, "pointerup", (evt) => this.onPointerUp(evt), { capture: true });
     this.registerDomEvent(window, "keydown", (evt) => this.onKeyDown(evt), { capture: true });
+    this.registerDomEvent(window, "wheel", (evt) => this.onWheel(evt), { capture: true, passive: false });
     this.registerDomEvent(window, "dblclick", (evt) => {
       if (evt.shiftKey || evt.altKey)
         return;
@@ -1515,6 +1594,45 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     }
     const isZh = getLocaleStrings().noticeUndo === "\u5DF2\u64A4\u9500";
     this.showSaveToast(isZh ? "\u5DF2\u5220\u9664 UI \u6846 (Ctrl+Z \u53EF\u64A4\u9500)" : "UI box deleted (Ctrl+Z to undo)");
+    return true;
+  }
+  onWheel(evt) {
+    if (!evt.ctrlKey && !evt.metaKey)
+      return;
+    if (this.overlay)
+      return;
+    const factor = evt.deltaY < 0 ? 1.08 : 0.92;
+    if (this.scaleHoveredBox(factor)) {
+      evt.preventDefault();
+      evt.stopPropagation();
+      evt.stopImmediatePropagation();
+    }
+  }
+  scaleHoveredBox(factor) {
+    if (this.overlay)
+      return false;
+    const activeTag = document.activeElement?.tagName?.toLowerCase();
+    if (activeTag === "input" || activeTag === "textarea" || document.activeElement?.isContentEditable) {
+      return false;
+    }
+    const el = this.lastPointerX > 0 || this.lastPointerY > 0 ? document.elementFromPoint(this.lastPointerX, this.lastPointerY) : null;
+    const candidate = this.hovered ?? el ?? this.hoveredSvgTarget;
+    if (!candidate)
+      return false;
+    const scaleTarget = resolveScaleTarget(candidate, this.lastPointerX, this.lastPointerY);
+    if (!scaleTarget || !this.isInteractiveSvg(scaleTarget.svg))
+      return false;
+    this.history.recordSnapshot(scaleTarget.svg);
+    const res = scaleCard(scaleTarget.element, scaleTarget.svg, factor);
+    if (!res)
+      return false;
+    const inModal = !!scaleTarget.svg.closest(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body");
+    if (!inModal) {
+      void this.persistSvg(scaleTarget.svg);
+    }
+    const pct = Math.round(res.scale * 100);
+    const isZh = getLocaleStrings().noticeUndo === "\u5DF2\u64A4\u9500";
+    this.showSaveToast(isZh ? `UI \u5927\u5C0F: ${pct}% (Ctrl+Z \u53EF\u64A4\u9500)` : `UI Scale: ${pct}% (Ctrl+Z to undo)`);
     return true;
   }
   undo(svg) {
@@ -2319,6 +2437,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     helpPopover.className = "svg-help-popover";
     const shortcuts = isZh ? [
       { key: "Ctrl+S", desc: "\u5373\u65F6\u4FDD\u5B58 (\u4FDD\u7559\u64A4\u9500\u8BB0\u5F55)" },
+      { key: "Ctrl+\u6EDA\u8F6E", desc: "\u7F29\u653EUI\u6846\u5927\u5C0F (\u589E\u5927/\u51CF\u5C0F)" },
       { key: "Delete", desc: "\u60AC\u6D6EUI\u6846\u6309\u952E\u76F4\u63A5\u5220\u9664" },
       { key: "\u6E05\u7A7A\u6587\u672C", desc: "\u6E05\u7A7A\u6587\u5B57\u81EA\u52A8\u5220\u9664UI\u6846" },
       { key: "Shift+\u62D6\u62FD", desc: "\u79FB\u52A8UI\u6846" },
@@ -2327,6 +2446,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       { key: "\u53CC\u51FB / F2", desc: "\u5FEB\u901F\u7F16\u8F91\u6587\u5B57" }
     ] : [
       { key: "Ctrl+S", desc: "Save in-place (keeps history)" },
+      { key: "Ctrl+Scroll", desc: "Scale UI box size (enlarge/shrink)" },
       { key: "Delete", desc: "Hover and press Delete to remove box" },
       { key: "Clear Text", desc: "Auto-deletes box when text is empty" },
       { key: "Shift+Drag", desc: "Move UI box" },
