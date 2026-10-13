@@ -55,6 +55,11 @@ export function openTextOverlay(parent: HTMLElement, opts: OverlayOptions): Over
 		closed = true;
 		window.removeEventListener("keyup", suppressAlt, { capture: true });
 		input.remove();
+		const focusTarget = (parent.closest(".a1-svg-modal-dialog, .svg-lightbox-modal")
+			?? document.querySelector(".a1-svg-modal-dialog, .svg-lightbox-modal")) as HTMLElement | null;
+		if (focusTarget instanceof HTMLElement) {
+			focusTarget.focus();
+		}
 	};
 	const commit = () => {
 		if (closed) return;

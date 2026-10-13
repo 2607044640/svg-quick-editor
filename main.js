@@ -794,6 +794,10 @@ function openTextOverlay(parent, opts) {
     closed = true;
     window.removeEventListener("keyup", suppressAlt, { capture: true });
     input.remove();
+    const focusTarget = parent.closest(".a1-svg-modal-dialog, .svg-lightbox-modal") ?? document.querySelector(".a1-svg-modal-dialog, .svg-lightbox-modal");
+    if (focusTarget instanceof HTMLElement) {
+      focusTarget.focus();
+    }
   };
   const commit = () => {
     if (closed)
@@ -1851,9 +1855,17 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
         if (!inModal) {
           void this.persistSvg(svg);
         }
+        const focusTarget = svg.closest(".a1-svg-modal-dialog, .svg-lightbox-modal") ?? document.querySelector(".a1-svg-modal-dialog, .svg-lightbox-modal");
+        if (focusTarget) {
+          focusTarget.focus();
+        }
       },
       onCancel: () => {
         this.overlay = null;
+        const focusTarget = svg.closest(".a1-svg-modal-dialog, .svg-lightbox-modal") ?? document.querySelector(".a1-svg-modal-dialog, .svg-lightbox-modal");
+        if (focusTarget) {
+          focusTarget.focus();
+        }
       },
       onSave: () => {
         void this.saveCurrentSvg(svg, true);
@@ -2258,6 +2270,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     backdrop.className = "a1-svg-modal-backdrop";
     const dialog = document.createElement("div");
     dialog.className = "a1-svg-modal-dialog";
+    dialog.setAttribute("tabindex", "-1");
     const header = document.createElement("div");
     header.className = "a1-svg-modal-header";
     const titleRow = document.createElement("div");
@@ -2407,7 +2420,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       this.currentModalTitle = null;
       this.currentModalBody = null;
       this.currentModalSvg = null;
-      window.removeEventListener("keydown", keyHandler);
+      window.removeEventListener("keydown", keyHandler, { capture: true });
     };
     const requestClose = () => {
       if (isConfirming)
@@ -2429,6 +2442,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
           },
           () => {
             isConfirming = false;
+            dialog.focus();
           }
         );
         return;
@@ -2459,12 +2473,15 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       }
       if (e.key === "Escape" && !this.overlay && !isConfirming) {
         e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
         requestClose();
       }
     };
-    window.addEventListener("keydown", keyHandler);
+    window.addEventListener("keydown", keyHandler, { capture: true });
     document.body.appendChild(backdrop);
     this.activeModal = backdrop;
+    dialog.focus();
   }
   promptSaveConfirmation(onSave, onDiscard, onCancel) {
     const i18n = getLocaleStrings();
