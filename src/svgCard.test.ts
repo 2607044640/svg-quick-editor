@@ -1,6 +1,6 @@
 import { parseHTML } from "linkedom";
 import { describe, expect, it } from "vitest";
-import { cloneCard, collectAlignTargets, commitText, findCard, findTextInCard, insertCloneSibling, nudge, resetCloneSeq, resolveCloneTarget, resolveDeleteTarget, resolveHit, resolveScaleTarget, scaleCard, serializeSvg, smartAutoLayout, snapDelta } from "./svgCard";
+import { adaptAllTextBackgrounds, adaptBackgroundToText, cloneCard, collectAlignTargets, commitText, estimateStringWidth, findBackgroundRectForText, findCard, findTextInCard, insertCloneSibling, nudge, resetCloneSeq, resolveCloneTarget, resolveDeleteTarget, resolveHit, resolveScaleTarget, scaleCard, serializeSvg, smartAutoLayout, snapDelta } from "./svgCard";
 import { ensureMarker, findSvgSpans, matchSpan, spliceSvg } from "./svgSource";
 import { SvgHistoryManager } from "./svgHistory";
 
@@ -867,6 +867,112 @@ describe("smartAutoLayout", () => {
 		const redone = history.redo(svg);
 		expect(redone).toBe(true);
 		expect(svg.querySelector("#row1")!.getAttribute("transform")).toBe(modifiedTr);
+	});
+});
+
+describe("adaptBackgroundToText", () => {
+	it("estimates string width for CJK and ASCII characters accurately", () => {
+		const cjkW = estimateStringWidth("床铺舒适消焦虑", 12.2);
+		expect(cjkW).toBeCloseTo(7 * 12.2, 1);
+
+		const digitsW = estimateStringWidth("14353", 12.2);
+		expect(digitsW).toBeCloseTo(5 * 12.2 * 0.58, 1);
+
+		const mixedW = estimateStringWidth("床铺舒适消焦虑14353", 12.2);
+		expect(mixedW).toBeCloseTo(cjkW + digitsW, 1);
+	});
+
+	it("locates the dedicated background rect inside a pill/chip group", () => {
+		const { svg } = doc(`
+<svg viewBox="0 0 800 200">
+  <g id="outer-card">
+    <rect width="800" height="200"></rect>
+    <g id="pill" transform="translate(100, 20)">
+      <rect id="pill-bg" width="103.4" height="28"></rect>
+      <text id="pill-text" x="51.7" y="18.5" font-size="12.2" text-anchor="middle">床铺舒适消焦虑</text>
+    </g>
+  </g>
+</svg>`);
+		const text = svg.querySelector("#pill-text")!;
+		const bg = findBackgroundRectForText(text);
+		expect(bg).not.toBeNull();
+		expect(bg!.id).toBe("pill-bg");
+	});
+
+	it("adapts background rect width and re-centers middle-anchored text when text expands", () => {
+		const { svg } = doc(`
+<svg viewBox="0 0 800 200">
+  <g id="outer-card">
+    <rect width="800" height="200"></rect>
+    <g id="pill" transform="translate(100, 20)">
+      <rect id="pill-bg" width="103.4" height="28"></rect>
+      <text id="pill-text" x="51.7" y="18.5" font-size="12.2" text-anchor="middle">床铺舒适消焦虑</text>
+    </g>
+  </g>
+</svg>`);
+		const text = svg.querySelector("#pill-text")!;
+		text.textContent = "床铺舒适消焦虑14353";
+
+		const adapted = adaptBackgroundToText(text);
+		expect(adapted).toBe(true);
+
+		const bg = svg.querySelector("#pill-bg")!;
+		const newW = parseFloat(bg.getAttribute("width")!);
+		const newX = parseFloat(text.getAttribute("x")!);
+
+		// Original 103.4 should expand to ~138.8
+		expect(newW).toBeGreaterThan(130);
+		expect(newW).toBeLessThan(145);
+		// Text x should be centered (newW / 2)
+		expect(newX).toBeCloseTo(newW / 2, 1);
+	});
+
+	it("shifts subsequent sibling chips in horizontal flow to prevent overlap", () => {
+		const { svg } = doc(`
+<svg viewBox="0 0 800 200">
+  <g id="row">
+    <g id="pill1" transform="translate(100, 20)">
+      <rect width="90" height="28"></rect>
+      <text x="45" y="18.5" font-size="12" text-anchor="middle">睡前温水</text>
+    </g>
+    <g id="pill2" transform="translate(200, 20)">
+      <rect width="90" height="28"></rect>
+      <text x="45" y="18.5" font-size="12" text-anchor="middle">全黑静音</text>
+    </g>
+  </g>
+</svg>`);
+		const text1 = svg.querySelector("#pill1 text")!;
+		text1.textContent = "睡前温水降温极速安睡长效放松"; // expands significantly
+		const adapted = adaptBackgroundToText(text1);
+		expect(adapted).toBe(true);
+
+		// pill2 should have shifted right (x > 200)
+		const pill2Tr = svg.querySelector("#pill2")!.getAttribute("transform")!;
+		const pill2X = parseFloat(pill2Tr.match(/translate\(\s*([-\d.]+)/)![1]);
+		expect(pill2X).toBeGreaterThan(200);
+	});
+
+	it("automatically adapts background upon commitText", () => {
+		const { svg } = doc(`
+<svg viewBox="0 0 800 200">
+  <g id="pill" transform="translate(549.3, 15)">
+    <rect width="103.4" height="28"></rect>
+    <text x="51.7" y="18.5" font-size="12.2" text-anchor="middle">床铺舒适消焦虑</text>
+  </g>
+</svg>`);
+		const text = svg.querySelector("text")!;
+		const hit = resolveHit(text);
+		expect(hit).not.toBeNull();
+
+		commitText(hit!, "床铺舒适消焦虑14353");
+		expect(text.textContent).toBe("床铺舒适消焦虑14353");
+
+		const rect = svg.querySelector("rect")!;
+		const w = parseFloat(rect.getAttribute("width")!);
+		const x = parseFloat(text.getAttribute("x")!);
+
+		expect(w).toBeCloseTo(138.8, 0.5);
+		expect(x).toBeCloseTo(w / 2, 0.5);
 	});
 });
 

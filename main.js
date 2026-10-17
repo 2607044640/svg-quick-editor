@@ -418,6 +418,7 @@ function commitText(hit, raw) {
     return { action: "delete", removed: hit.owned };
   }
   writeText(hit.textEl, value);
+  adaptBackgroundToText(hit.textEl, value);
   return { action: "update", removed: [] };
 }
 var cloneSeq = 0;
@@ -598,6 +599,188 @@ function serializeSvg(el) {
       inner += escapeText(node.textContent ?? "");
   }
   return `${open}${inner}</${name}>`;
+}
+function estimateStringWidth(str, fontSize) {
+  let total = 0;
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    if (code > 11904 || code >= 8192 && code <= 8303 || code >= 12288 && code <= 12351 || code >= 65280 && code <= 65519) {
+      total += fontSize * 1;
+    } else if (code === 32) {
+      total += fontSize * 0.32;
+    } else if (str[i] === "i" || str[i] === "l" || str[i] === "I" || str[i] === "j" || str[i] === "'" || str[i] === "!" || str[i] === "|" || str[i] === "." || str[i] === ":" || str[i] === ";") {
+      total += fontSize * 0.28;
+    } else if (str[i] === "m" || str[i] === "w" || str[i] === "M" || str[i] === "W" || str[i] === "@" || str[i] === "%") {
+      total += fontSize * 0.85;
+    } else if (code >= 48 && code <= 57 || code >= 65 && code <= 90 || code >= 97 && code <= 122) {
+      total += fontSize * 0.58;
+    } else {
+      total += fontSize * 0.45;
+    }
+  }
+  return total;
+}
+function measureTextWidth(textEl, textContent) {
+  const content = textContent !== void 0 ? textContent : textEl.textContent ?? "";
+  if (!content)
+    return 0;
+  if (typeof window !== "undefined" && typeof textEl.getComputedTextLength === "function") {
+    try {
+      const original = textEl.textContent;
+      if (textContent !== void 0 && textContent !== original) {
+        textEl.textContent = textContent;
+        const len = textEl.getComputedTextLength();
+        textEl.textContent = original;
+        if (len && len > 0)
+          return len;
+      } else {
+        const len = textEl.getComputedTextLength();
+        if (len && len > 0)
+          return len;
+      }
+    } catch {
+    }
+  }
+  if (typeof window !== "undefined" && typeof textEl.getBBox === "function") {
+    try {
+      const bb = textEl.getBBox();
+      if (bb && bb.width > 0)
+        return bb.width;
+    } catch {
+    }
+  }
+  let fontSize = 14;
+  const fsAttr = textEl.getAttribute("font-size");
+  if (fsAttr) {
+    const parsed = parseFloat(fsAttr);
+    if (Number.isFinite(parsed) && parsed > 0)
+      fontSize = parsed;
+  } else if (typeof window !== "undefined" && typeof getComputedStyle === "function") {
+    try {
+      const cs = getComputedStyle(textEl);
+      const parsed = parseFloat(cs.fontSize);
+      if (Number.isFinite(parsed) && parsed > 0)
+        fontSize = parsed;
+    } catch {
+    }
+  }
+  return estimateStringWidth(content, fontSize);
+}
+function findBackgroundRectForText(textEl) {
+  if (!textEl)
+    return null;
+  const svg = textEl.closest("svg");
+  if (!svg)
+    return null;
+  const parent = textEl.parentElement;
+  if (parent && parent !== svg) {
+    if (localName(parent) === "g") {
+      const textsInParent = Array.from(parent.querySelectorAll("text"));
+      if (textsInParent.length === 1 && textsInParent[0] === textEl) {
+        const rects = Array.from(parent.children).filter((c) => localName(c) === "rect");
+        if (rects.length === 1 && isCardSizedRect(rects[0], svg)) {
+          return rects[0];
+        }
+        if (rects.length > 1) {
+          const valid = rects.filter((r) => isCardSizedRect(r, svg));
+          if (valid.length === 1)
+            return valid[0];
+        }
+      }
+    }
+    const badge = findAdjacentBadgeRect(textEl);
+    if (badge)
+      return badge;
+  }
+  let curr = parent;
+  while (curr && curr !== svg) {
+    if (localName(curr) === "g") {
+      const texts = Array.from(curr.querySelectorAll("text"));
+      if (texts.length === 1 && texts[0] === textEl) {
+        const rect = curr.querySelector(":scope > rect");
+        if (rect && isCardSizedRect(rect, svg)) {
+          return rect;
+        }
+      }
+    }
+    curr = curr.parentElement;
+  }
+  return null;
+}
+function shiftSubsequentSiblingChips(chipGroup, deltaW) {
+  if (Math.abs(deltaW) < 0.5)
+    return;
+  const parent = chipGroup.parentElement;
+  if (!parent)
+    return;
+  const chipCoords = getCoords(chipGroup);
+  if (!chipCoords)
+    return;
+  const siblings = Array.from(parent.children).filter((c) => {
+    if (c === chipGroup || localName(c) !== "g")
+      return false;
+    return countTexts(c) === 1 && c.querySelector("rect") !== null;
+  });
+  for (const sib of siblings) {
+    const sibCoords = getCoords(sib);
+    if (!sibCoords)
+      return;
+    if (Math.abs(sibCoords.y - chipCoords.y) <= 10 && sibCoords.x > chipCoords.x) {
+      nudge(sib, deltaW, 0);
+    }
+  }
+}
+function adaptBackgroundToText(textEl, newText) {
+  const text = asText(textEl);
+  if (!text)
+    return false;
+  const content = newText !== void 0 ? newText : text.textContent ?? "";
+  if (!content.trim())
+    return false;
+  const bgRect = findBackgroundRectForText(text);
+  if (!bgRect)
+    return false;
+  const curRectW = num(bgRect.getAttribute("width"));
+  if (curRectW == null || curRectW <= 0)
+    return false;
+  const textW = measureTextWidth(text, content);
+  if (textW <= 0)
+    return false;
+  const curTextW = measureTextWidth(text);
+  let padH = 18;
+  if (curRectW > curTextW && curRectW - curTextW >= 8 && curRectW - curTextW <= 60) {
+    padH = curRectW - curTextW;
+  }
+  const newRectW = Math.round((textW + padH) * 10) / 10;
+  const deltaW = newRectW - curRectW;
+  if (Math.abs(deltaW) < 0.5)
+    return false;
+  bgRect.setAttribute("width", trimNum(newRectW));
+  const anchor = (text.getAttribute("text-anchor") || "").toLowerCase();
+  const rectX = num(bgRect.getAttribute("x")) ?? 0;
+  if (anchor === "middle") {
+    const newCenterX = Math.round((rectX + newRectW / 2) * 10) / 10;
+    text.setAttribute("x", trimNum(newCenterX));
+    for (const tspan of Array.from(text.querySelectorAll("tspan"))) {
+      tspan.setAttribute("x", trimNum(newCenterX));
+    }
+  } else if (anchor === "end") {
+    const newEndX = Math.round((rectX + newRectW - padH / 2) * 10) / 10;
+    text.setAttribute("x", trimNum(newEndX));
+    for (const tspan of Array.from(text.querySelectorAll("tspan"))) {
+      tspan.setAttribute("x", trimNum(newEndX));
+    }
+  } else {
+    const curX = num(text.getAttribute("x")) ?? 0;
+    if (curX < rectX) {
+      bgRect.setAttribute("x", trimNum(curX - padH / 2));
+    }
+  }
+  const chipGroup = text.parentElement;
+  if (chipGroup && localName(chipGroup) === "g" && countTexts(chipGroup) === 1) {
+    shiftSubsequentSiblingChips(chipGroup, deltaW);
+  }
+  return true;
 }
 function insertCloneSibling(source, clone) {
   const parent = source.parentElement;
@@ -1084,11 +1267,19 @@ function openTextOverlay(parent, opts) {
     close();
     opts.onCancel();
   };
+  const handleLiveInput = () => {
+    if (closed || composing)
+      return;
+    const val = input.value;
+    opts.onInput?.(val);
+  };
+  input.addEventListener("input", handleLiveInput);
   input.addEventListener("compositionstart", () => {
     composing = true;
   });
   input.addEventListener("compositionend", () => {
     composing = false;
+    handleLiveInput();
   });
   input.addEventListener("keydown", (e) => {
     if (e.isComposing || composing || e.key === "Process")
@@ -2182,14 +2373,22 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     if (!hit || !svg)
       return;
     this.overlay?.close();
+    adaptBackgroundToText(hit.textEl);
     const rect = textEl.getBoundingClientRect();
     const cs = getComputedStyle(textEl);
+    const initialVal = readText(hit.textEl);
     this.overlay = openTextOverlay(document.body, {
       rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
-      value: readText(hit.textEl),
+      value: initialVal,
       fontSize: cs.fontSize,
       fontFamily: cs.fontFamily,
       color: cs.fill || cs.color,
+      onInput: (value) => {
+        if (!value || value.trim().length === 0)
+          return;
+        writeText(hit.textEl, value);
+        adaptBackgroundToText(hit.textEl, value);
+      },
       onCommit: (value) => {
         this.overlay = null;
         this.history.recordSnapshot(svg);
@@ -2205,6 +2404,8 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       },
       onCancel: () => {
         this.overlay = null;
+        writeText(hit.textEl, initialVal);
+        adaptBackgroundToText(hit.textEl, initialVal);
         const focusTarget = svg.closest(".a1-svg-modal-dialog, .svg-lightbox-modal") ?? document.querySelector(".a1-svg-modal-dialog, .svg-lightbox-modal");
         if (focusTarget) {
           focusTarget.focus();

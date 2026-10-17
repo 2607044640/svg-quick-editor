@@ -481,6 +481,7 @@ export function commitText(hit: TextHit, raw: string): CommitResult {
 		return { action: "delete", removed: hit.owned };
 	}
 	writeText(hit.textEl, value);
+	adaptBackgroundToText(hit.textEl, value);
 	return { action: "update", removed: [] };
 }
 
@@ -688,6 +689,268 @@ export function serializeSvg(el: Element): string {
 		else if (node.nodeType === 3) inner += escapeText(node.textContent ?? "");
 	}
 	return `${open}${inner}</${name}>`;
+}
+
+/**
+ * Estimates text display width when rendered with a given fontSize.
+ * Handles CJK (1.0em), Latin letters and numbers (~0.58em), spaces (0.32em), and narrow/wide symbols.
+ */
+export function estimateStringWidth(str: string, fontSize: number): number {
+	let total = 0;
+	for (let i = 0; i < str.length; i++) {
+		const code = str.charCodeAt(i);
+		if (
+			code > 0x2e80 ||
+			(code >= 0x2000 && code <= 0x206f) ||
+			(code >= 0x3000 && code <= 0x303f) ||
+			(code >= 0xff00 && code <= 0xffef)
+		) {
+			// CJK characters, full-width punctuation, ideographic symbols
+			total += fontSize * 1.0;
+		} else if (code === 32) {
+			// Space
+			total += fontSize * 0.32;
+		} else if (
+			str[i] === "i" ||
+			str[i] === "l" ||
+			str[i] === "I" ||
+			str[i] === "j" ||
+			str[i] === "'" ||
+			str[i] === "!" ||
+			str[i] === "|" ||
+			str[i] === "." ||
+			str[i] === ":" ||
+			str[i] === ";"
+		) {
+			// Narrow characters
+			total += fontSize * 0.28;
+		} else if (
+			str[i] === "m" ||
+			str[i] === "w" ||
+			str[i] === "M" ||
+			str[i] === "W" ||
+			str[i] === "@" ||
+			str[i] === "%"
+		) {
+			// Wide Latin letters and symbols
+			total += fontSize * 0.85;
+		} else if (
+			(code >= 48 && code <= 57) ||
+			(code >= 65 && code <= 90) ||
+			(code >= 97 && code <= 122)
+		) {
+			// Normal Latin letters and digits
+			total += fontSize * 0.58;
+		} else {
+			// General symbols (+, -, *, /, (), [], etc.)
+			total += fontSize * 0.45;
+		}
+	}
+	return total;
+}
+
+/**
+ * Measures the pixel width of an SVG text element.
+ * Prioritizes native browser SVG text metrics (getComputedTextLength, getBBox),
+ * falling back to character-type heuristics.
+ */
+export function measureTextWidth(textEl: SVGTextElement, textContent?: string): number {
+	const content = textContent !== undefined ? textContent : (textEl.textContent ?? "");
+	if (!content) return 0;
+
+	if (typeof window !== "undefined" && typeof textEl.getComputedTextLength === "function") {
+		try {
+			const original = textEl.textContent;
+			if (textContent !== undefined && textContent !== original) {
+				textEl.textContent = textContent;
+				const len = textEl.getComputedTextLength();
+				textEl.textContent = original;
+				if (len && len > 0) return len;
+			} else {
+				const len = textEl.getComputedTextLength();
+				if (len && len > 0) return len;
+			}
+		} catch {}
+	}
+
+	if (typeof window !== "undefined" && typeof textEl.getBBox === "function") {
+		try {
+			const bb = textEl.getBBox();
+			if (bb && bb.width > 0) return bb.width;
+		} catch {}
+	}
+
+	let fontSize = 14;
+	const fsAttr = textEl.getAttribute("font-size");
+	if (fsAttr) {
+		const parsed = parseFloat(fsAttr);
+		if (Number.isFinite(parsed) && parsed > 0) fontSize = parsed;
+	} else if (typeof window !== "undefined" && typeof getComputedStyle === "function") {
+		try {
+			const cs = getComputedStyle(textEl);
+			const parsed = parseFloat(cs.fontSize);
+			if (Number.isFinite(parsed) && parsed > 0) fontSize = parsed;
+		} catch {}
+	}
+
+	return estimateStringWidth(content, fontSize);
+}
+
+/**
+ * Locates the background <rect> belonging to this specific text element (chip / badge / pill / box).
+ * Avoids canvas backgrounds or outer cards containing multiple texts.
+ */
+export function findBackgroundRectForText(textEl: Element): Element | null {
+	if (!textEl) return null;
+	const svg = textEl.closest("svg");
+	if (!svg) return null;
+
+	const parent = textEl.parentElement;
+	if (parent && parent !== svg) {
+		// Case 1: Parent is a dedicated group containing only this text (e.g. <g><rect/><text/></g>)
+		if (localName(parent) === "g") {
+			const textsInParent = Array.from(parent.querySelectorAll("text"));
+			if (textsInParent.length === 1 && textsInParent[0] === textEl) {
+				const rects = Array.from(parent.children).filter((c) => localName(c) === "rect");
+				if (rects.length === 1 && isCardSizedRect(rects[0], svg)) {
+					return rects[0];
+				}
+				if (rects.length > 1) {
+					const valid = rects.filter((r) => isCardSizedRect(r, svg));
+					if (valid.length === 1) return valid[0];
+				}
+			}
+		}
+
+		// Case 2: Adjacent badge rect in a multi-item container
+		const badge = findAdjacentBadgeRect(textEl);
+		if (badge) return badge;
+	}
+
+	// Case 3: Search ancestors up to svg for a dedicated single-text container
+	let curr: Element | null = parent;
+	while (curr && curr !== svg) {
+		if (localName(curr) === "g") {
+			const texts = Array.from(curr.querySelectorAll("text"));
+			if (texts.length === 1 && texts[0] === textEl) {
+				const rect = curr.querySelector(":scope > rect");
+				if (rect && isCardSizedRect(rect, svg)) {
+					return rect;
+				}
+			}
+		}
+		curr = curr.parentElement;
+	}
+
+	return null;
+}
+
+/**
+ * Shifts subsequent sibling chips to the right when a chip's width expands,
+ * maintaining horizontal flow and preventing overlap.
+ */
+function shiftSubsequentSiblingChips(chipGroup: Element, deltaW: number): void {
+	if (Math.abs(deltaW) < 0.5) return;
+	const parent = chipGroup.parentElement;
+	if (!parent) return;
+
+	const chipCoords = getCoords(chipGroup);
+	if (!chipCoords) return;
+
+	const siblings = Array.from(parent.children).filter((c) => {
+		if (c === chipGroup || localName(c) !== "g") return false;
+		return countTexts(c) === 1 && c.querySelector("rect") !== null;
+	});
+
+	for (const sib of siblings) {
+		const sibCoords = getCoords(sib);
+		if (!sibCoords) return;
+		// Same row (within 10px Y) and positioned to the right
+		if (Math.abs(sibCoords.y - chipCoords.y) <= 10 && sibCoords.x > chipCoords.x) {
+			nudge(sib, deltaW, 0);
+		}
+	}
+}
+
+/**
+ * Intelligently adapts the background rect's width to fit the given text content.
+ * Keeps centered text centered (text-anchor="middle") and adjusts rect width seamlessly.
+ * Does NOT run smartAutoLayout (only adapts the background of the edited text).
+ */
+export function adaptBackgroundToText(textEl: Element, newText?: string): boolean {
+	const text = asText(textEl);
+	if (!text) return false;
+
+	const content = newText !== undefined ? newText : (text.textContent ?? "");
+	if (!content.trim()) return false;
+
+	const bgRect = findBackgroundRectForText(text);
+	if (!bgRect) return false;
+
+	const curRectW = num(bgRect.getAttribute("width"));
+	if (curRectW == null || curRectW <= 0) return false;
+
+	const textW = measureTextWidth(text, content);
+	if (textW <= 0) return false;
+
+	// Calculate appropriate horizontal padding
+	const curTextW = measureTextWidth(text);
+	let padH = 18; // default 9px per side
+	if (curRectW > curTextW && curRectW - curTextW >= 8 && curRectW - curTextW <= 60) {
+		padH = curRectW - curTextW;
+	}
+
+	const newRectW = Math.round((textW + padH) * 10) / 10;
+	const deltaW = newRectW - curRectW;
+	if (Math.abs(deltaW) < 0.5) return false;
+
+	bgRect.setAttribute("width", trimNum(newRectW));
+
+	// Alignment adjustment
+	const anchor = (text.getAttribute("text-anchor") || "").toLowerCase();
+	const rectX = num(bgRect.getAttribute("x")) ?? 0;
+
+	if (anchor === "middle") {
+		const newCenterX = Math.round((rectX + newRectW / 2) * 10) / 10;
+		text.setAttribute("x", trimNum(newCenterX));
+		for (const tspan of Array.from(text.querySelectorAll("tspan"))) {
+			tspan.setAttribute("x", trimNum(newCenterX));
+		}
+	} else if (anchor === "end") {
+		const newEndX = Math.round((rectX + newRectW - padH / 2) * 10) / 10;
+		text.setAttribute("x", trimNum(newEndX));
+		for (const tspan of Array.from(text.querySelectorAll("tspan"))) {
+			tspan.setAttribute("x", trimNum(newEndX));
+		}
+	} else {
+		// Left-aligned: text stays at rectX + padH / 2
+		const curX = num(text.getAttribute("x")) ?? 0;
+		if (curX < rectX) {
+			bgRect.setAttribute("x", trimNum(curX - padH / 2));
+		}
+	}
+
+	// If this chip is wrapped in a dedicated group, shift subsequent chips in the same row
+	const chipGroup = text.parentElement;
+	if (chipGroup && localName(chipGroup) === "g" && countTexts(chipGroup) === 1) {
+		shiftSubsequentSiblingChips(chipGroup, deltaW);
+	}
+
+	return true;
+}
+
+/**
+ * Scans all <text> elements in the SVG and auto-adapts their background rects if text overflows.
+ */
+export function adaptAllTextBackgrounds(svg: Element): boolean {
+	let changed = false;
+	const texts = Array.from(svg.querySelectorAll("text"));
+	for (const t of texts) {
+		if (adaptBackgroundToText(t)) {
+			changed = true;
+		}
+	}
+	return changed;
 }
 
 export function resetCloneSeq(n = 0): void {

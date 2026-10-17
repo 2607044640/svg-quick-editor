@@ -1,5 +1,5 @@
 import { App, MarkdownView, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile } from "obsidian";
-import { asText, cloneCard, commitText, findTextInCard, insertCloneSibling, nudge, readText, resolveCloneTarget, resolveDeleteTarget, resolveHit, resolveScaleTarget, scaleCard, serializeSvg, smartAutoLayout, snapDelta, type AlignGuide, type TextHit } from "./svgCard";
+import { adaptAllTextBackgrounds, adaptBackgroundToText, asText, cloneCard, commitText, findTextInCard, insertCloneSibling, nudge, readText, resolveCloneTarget, resolveDeleteTarget, resolveHit, resolveScaleTarget, scaleCard, serializeSvg, smartAutoLayout, snapDelta, writeText, type AlignGuide, type TextHit } from "./svgCard";
 import { openTextOverlay, type OverlayHandle } from "./editorOverlay";
 import { ensureMarker, matchSpan, spliceSvg } from "./svgSource";
 import { SvgHistoryManager } from "./svgHistory";
@@ -988,14 +988,25 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		const svg = (textEl as SVGElement).ownerSVGElement ?? (textEl.closest("svg") as SVGSVGElement | null);
 		if (!hit || !svg) return;
 		this.overlay?.close();
+
+		// Immediately adapt background if text already overflows
+		adaptBackgroundToText(hit.textEl);
+
 		const rect = textEl.getBoundingClientRect();
 		const cs = getComputedStyle(textEl);
+		const initialVal = readText(hit.textEl);
+
 		this.overlay = openTextOverlay(document.body, {
 			rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
-			value: readText(hit.textEl),
+			value: initialVal,
 			fontSize: cs.fontSize,
 			fontFamily: cs.fontFamily,
 			color: cs.fill || cs.color,
+			onInput: (value) => {
+				if (!value || value.trim().length === 0) return;
+				writeText(hit.textEl, value);
+				adaptBackgroundToText(hit.textEl, value);
+			},
 			onCommit: (value) => {
 				this.overlay = null;
 				this.history.recordSnapshot(svg);
@@ -1012,6 +1023,8 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			},
 			onCancel: () => {
 				this.overlay = null;
+				writeText(hit.textEl, initialVal);
+				adaptBackgroundToText(hit.textEl, initialVal);
 				const focusTarget = (svg.closest(".a1-svg-modal-dialog, .svg-lightbox-modal")
 					?? document.querySelector(".a1-svg-modal-dialog, .svg-lightbox-modal")) as HTMLElement | null;
 				if (focusTarget) {

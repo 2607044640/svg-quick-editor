@@ -9,6 +9,7 @@ export interface OverlayOptions {
 	fontSize: string;
 	fontFamily: string;
 	color: string;
+	onInput?: (value: string) => void;
 	onCommit: (value: string) => void;
 	onCancel: () => void;
 	onSave?: () => void;
@@ -73,11 +74,19 @@ export function openTextOverlay(parent: HTMLElement, opts: OverlayOptions): Over
 		opts.onCancel();
 	};
 
+	const handleLiveInput = () => {
+		if (closed || composing) return;
+		const val = input.value;
+		opts.onInput?.(val);
+	};
+
+	input.addEventListener("input", handleLiveInput);
 	input.addEventListener("compositionstart", () => {
 		composing = true;
 	});
 	input.addEventListener("compositionend", () => {
 		composing = false;
+		handleLiveInput();
 	});
 	input.addEventListener("keydown", (e) => {
 		if (e.isComposing || composing || e.key === "Process") return;
