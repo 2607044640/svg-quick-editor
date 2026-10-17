@@ -9,6 +9,10 @@ export interface OverlayOptions {
 	fontSize: string;
 	fontFamily: string;
 	color: string;
+	background?: string;
+	borderColor?: string;
+	boxShadow?: string;
+	caretColor?: string;
 	onInput?: (value: string) => void;
 	onCommit: (value: string) => void;
 	onCancel: () => void;
@@ -39,6 +43,18 @@ export function openTextOverlay(parent: HTMLElement, opts: OverlayOptions): Over
 	input.style.fontSize = opts.fontSize || "14px";
 	input.style.fontFamily = opts.fontFamily || "inherit";
 	input.style.color = opts.color || "inherit";
+	if (opts.background) {
+		input.style.background = opts.background;
+	}
+	if (opts.borderColor) {
+		input.style.borderColor = opts.borderColor;
+	}
+	if (opts.boxShadow) {
+		input.style.boxShadow = opts.boxShadow;
+	}
+	if (opts.caretColor) {
+		input.style.caretColor = opts.caretColor;
+	}
 
 	let closed = false;
 	let composing = false;

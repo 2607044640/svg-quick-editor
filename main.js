@@ -93,20 +93,28 @@ function findAdjacentBadgeRect(textEl) {
     return null;
   const tx = coords.x;
   const ty = coords.y;
+  const anchor = (textEl.getAttribute("text-anchor") || "").toLowerCase();
   const rects = Array.from(parent.children).filter((c) => localName(c) === "rect");
   for (const r of rects) {
     const w = num(r.getAttribute("width")) ?? 0;
     const h = num(r.getAttribute("height")) ?? 0;
     if (w <= 4 || h <= 4)
       continue;
-    if (w > 420 && h > 85)
-      continue;
-    if (h > 85)
+    if (w > 220 || h > 50)
       continue;
     const rx = num(r.getAttribute("x")) ?? 0;
     const ry = num(r.getAttribute("y")) ?? 0;
-    if (tx >= rx - 20 && tx <= rx + w + 20 && ty >= ry - 5 && ty <= ry + h + 20) {
-      return r;
+    if (ty < ry - 5 || ty > ry + h + 20)
+      continue;
+    if (anchor === "middle") {
+      const badgeCx = rx + w / 2;
+      if (Math.abs(tx - badgeCx) <= Math.max(w * 0.45, 16)) {
+        return r;
+      }
+    } else {
+      if (tx >= rx - 5 && tx <= rx + w * 0.7) {
+        return r;
+      }
     }
   }
   return null;
@@ -1235,6 +1243,18 @@ function openTextOverlay(parent, opts) {
   input.style.fontSize = opts.fontSize || "14px";
   input.style.fontFamily = opts.fontFamily || "inherit";
   input.style.color = opts.color || "inherit";
+  if (opts.background) {
+    input.style.background = opts.background;
+  }
+  if (opts.borderColor) {
+    input.style.borderColor = opts.borderColor;
+  }
+  if (opts.boxShadow) {
+    input.style.boxShadow = opts.boxShadow;
+  }
+  if (opts.caretColor) {
+    input.style.caretColor = opts.caretColor;
+  }
   let closed = false;
   let composing = false;
   const suppressAlt = (e) => {
@@ -1323,6 +1343,194 @@ function openTextOverlay(parent, opts) {
   input.focus();
   input.select();
   return { input, close };
+}
+
+// src/svgTheme.ts
+function parseColorToRgb(colorStr) {
+  if (!colorStr)
+    return null;
+  const s = colorStr.trim().toLowerCase();
+  if (s.startsWith("#")) {
+    const hex = s.slice(1);
+    if (hex.length === 3 || hex.length === 4) {
+      return {
+        r: parseInt(hex[0] + hex[0], 16),
+        g: parseInt(hex[1] + hex[1], 16),
+        b: parseInt(hex[2] + hex[2], 16)
+      };
+    }
+    if (hex.length >= 6) {
+      return {
+        r: parseInt(hex.slice(0, 2), 16),
+        g: parseInt(hex.slice(2, 4), 16),
+        b: parseInt(hex.slice(4, 6), 16)
+      };
+    }
+  }
+  const rgbMatch = s.match(/rgba?\(\s*([.\d]+)\s*,\s*([.\d]+)\s*,\s*([.\d]+)/);
+  if (rgbMatch) {
+    return {
+      r: parseFloat(rgbMatch[1]),
+      g: parseFloat(rgbMatch[2]),
+      b: parseFloat(rgbMatch[3])
+    };
+  }
+  const named = {
+    white: { r: 255, g: 255, b: 255 },
+    black: { r: 0, g: 0, b: 0 },
+    gray: { r: 128, g: 128, b: 128 },
+    grey: { r: 128, g: 128, b: 128 },
+    silver: { r: 192, g: 192, b: 192 },
+    darkgray: { r: 169, g: 169, b: 169 },
+    lightgray: { r: 211, g: 211, b: 211 },
+    ghostwhite: { r: 248, g: 248, b: 255 },
+    whitesmoke: { r: 245, g: 245, b: 245 }
+  };
+  if (named[s])
+    return named[s];
+  return null;
+}
+function getLuminance(r, g, b) {
+  return 0.299 * r + 0.587 * g + 0.114 * b;
+}
+function isObsidianDarkTheme() {
+  if (typeof document === "undefined")
+    return true;
+  if (document.body.classList.contains("theme-light"))
+    return false;
+  if (document.body.classList.contains("theme-dark"))
+    return true;
+  return true;
+}
+function getObsidianTrueBackground() {
+  if (typeof document === "undefined" || typeof getComputedStyle === "undefined") {
+    return isObsidianDarkTheme() ? "#1e1e1e" : "#ffffff";
+  }
+  const bodyCs = getComputedStyle(document.body);
+  const bgPrimary = bodyCs.getPropertyValue("--background-primary").trim();
+  if (bgPrimary)
+    return bgPrimary;
+  const bgSec = bodyCs.getPropertyValue("--background-secondary").trim();
+  if (bgSec)
+    return bgSec;
+  const bgBody = bodyCs.backgroundColor;
+  if (bgBody && bgBody !== "rgba(0, 0, 0, 0)" && bgBody !== "transparent") {
+    return bgBody;
+  }
+  return isObsidianDarkTheme() ? "#1e1e1e" : "#ffffff";
+}
+function getSvgLocalBackground(textEl) {
+  const svg = textEl.ownerSVGElement ?? textEl.closest("svg");
+  if (!svg)
+    return null;
+  const extractColor = (r) => {
+    const fill = r.getAttribute("fill") || r.style.fill;
+    if (!fill || fill === "none" || fill === "transparent")
+      return null;
+    if (fill.startsWith("url(")) {
+      const idMatch = fill.match(/url\(#([^)]+)\)/);
+      if (idMatch) {
+        const grad = svg.querySelector(`#${idMatch[1]}`);
+        if (grad) {
+          const stop = grad.querySelector("stop");
+          const stopColor = stop?.getAttribute("stop-color") || stop?.style.stopColor;
+          if (stopColor)
+            return stopColor;
+        }
+      }
+      return null;
+    }
+    return fill;
+  };
+  const bgRect = findBackgroundRectForText(textEl);
+  if (bgRect) {
+    const c = extractColor(bgRect);
+    if (c)
+      return c;
+  }
+  let parent = textEl.parentElement;
+  while (parent && parent !== svg) {
+    const cardRect = parent.querySelector(":scope > rect");
+    if (cardRect) {
+      const c = extractColor(cardRect);
+      if (c)
+        return c;
+    }
+    parent = parent.parentElement;
+  }
+  const rootRect = svg.querySelector(":scope > rect");
+  if (rootRect) {
+    const c = extractColor(rootRect);
+    if (c)
+      return c;
+  }
+  return null;
+}
+function resolveVisualTextColor(textEl) {
+  const tspans = Array.from(textEl.querySelectorAll("tspan"));
+  for (const tspan of tspans) {
+    const fill = tspan.getAttribute("fill") || tspan.style.fill;
+    if (fill && fill !== "none" && fill !== "transparent")
+      return fill;
+    const col = tspan.style.color;
+    if (col && col !== "none" && col !== "transparent")
+      return col;
+  }
+  const directFill = textEl.getAttribute("fill") || textEl.style.fill;
+  if (directFill && directFill !== "none" && directFill !== "transparent") {
+    return directFill;
+  }
+  let p = textEl.parentElement;
+  while (p && p.tagName.toLowerCase() !== "svg") {
+    const pFill = p.getAttribute("fill") || p.style.fill;
+    if (pFill && pFill !== "none" && pFill !== "transparent")
+      return pFill;
+    p = p.parentElement;
+  }
+  if (typeof getComputedStyle !== "undefined") {
+    try {
+      const cs = getComputedStyle(textEl);
+      if (cs.fill && cs.fill !== "none" && cs.fill !== "rgba(0, 0, 0, 0)") {
+        return cs.fill;
+      }
+      if (cs.color && cs.color !== "rgba(0, 0, 0, 0)")
+        return cs.color;
+    } catch {
+    }
+  }
+  return "";
+}
+function resolveEffectiveEditorColors(textEl) {
+  const isDark = isObsidianDarkTheme();
+  const obsidianBg = getObsidianTrueBackground();
+  const localBg = getSvgLocalBackground(textEl);
+  const effectiveBg = localBg || obsidianBg;
+  const bgRgb = parseColorToRgb(effectiveBg);
+  const bgLum = bgRgb ? getLuminance(bgRgb.r, bgRgb.g, bgRgb.b) : isDark ? 25 : 245;
+  const isBgDark = bgLum < 128;
+  const visualTextCol = resolveVisualTextColor(textEl);
+  let finalTextColor = visualTextCol;
+  if (visualTextCol) {
+    const textRgb = parseColorToRgb(visualTextCol);
+    if (textRgb) {
+      const textLum = getLuminance(textRgb.r, textRgb.g, textRgb.b);
+      if (isBgDark && textLum < 90) {
+        finalTextColor = "var(--text-normal, #f8fafc)";
+      } else if (!isBgDark && textLum > 170) {
+        finalTextColor = "var(--text-normal, #111827)";
+      }
+    }
+  } else {
+    finalTextColor = isBgDark ? "var(--text-normal, #f8fafc)" : "var(--text-normal, #111827)";
+  }
+  const inputBg = isBgDark ? localBg && bgLum >= 15 && bgLum <= 60 ? localBg : "var(--background-primary, #1e1e1e)" : "var(--background-primary, #ffffff)";
+  return {
+    background: inputBg,
+    color: finalTextColor,
+    border: "var(--interactive-accent, #7c9cff)",
+    boxShadow: isBgDark ? "0 0 0 3px color-mix(in srgb, var(--interactive-accent, #7c9cff) 35%, transparent), 0 4px 14px rgba(0, 0, 0, 0.55)" : "0 0 0 3px color-mix(in srgb, var(--interactive-accent, #7c9cff) 25%, transparent), 0 4px 14px rgba(0, 0, 0, 0.12)",
+    caretColor: "var(--interactive-accent, #7c9cff)"
+  };
 }
 
 // src/svgSource.ts
@@ -2377,12 +2585,17 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     const rect = textEl.getBoundingClientRect();
     const cs = getComputedStyle(textEl);
     const initialVal = readText(hit.textEl);
+    const theme = resolveEffectiveEditorColors(hit.textEl);
     this.overlay = openTextOverlay(document.body, {
       rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
       value: initialVal,
       fontSize: cs.fontSize,
       fontFamily: cs.fontFamily,
-      color: cs.fill || cs.color,
+      color: theme.color,
+      background: theme.background,
+      borderColor: theme.border,
+      boxShadow: theme.boxShadow,
+      caretColor: theme.caretColor,
       onInput: (value) => {
         if (!value || value.trim().length === 0)
           return;

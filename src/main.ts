@@ -1,6 +1,7 @@
 import { App, MarkdownView, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile } from "obsidian";
 import { adaptAllTextBackgrounds, adaptBackgroundToText, asText, cloneCard, commitText, findTextInCard, insertCloneSibling, nudge, readText, resolveCloneTarget, resolveDeleteTarget, resolveHit, resolveScaleTarget, scaleCard, serializeSvg, smartAutoLayout, snapDelta, writeText, type AlignGuide, type TextHit } from "./svgCard";
 import { openTextOverlay, type OverlayHandle } from "./editorOverlay";
+import { resolveEffectiveEditorColors } from "./svgTheme";
 import { ensureMarker, matchSpan, spliceSvg } from "./svgSource";
 import { SvgHistoryManager } from "./svgHistory";
 import "./styles.css";
@@ -995,13 +996,18 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		const rect = textEl.getBoundingClientRect();
 		const cs = getComputedStyle(textEl);
 		const initialVal = readText(hit.textEl);
+		const theme = resolveEffectiveEditorColors(hit.textEl as SVGTextElement);
 
 		this.overlay = openTextOverlay(document.body, {
 			rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
 			value: initialVal,
 			fontSize: cs.fontSize,
 			fontFamily: cs.fontFamily,
-			color: cs.fill || cs.color,
+			color: theme.color,
+			background: theme.background,
+			borderColor: theme.border,
+			boxShadow: theme.boxShadow,
+			caretColor: theme.caretColor,
 			onInput: (value) => {
 				if (!value || value.trim().length === 0) return;
 				writeText(hit.textEl, value);

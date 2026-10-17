@@ -5,11 +5,12 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0 8px;
-  border: 1px solid var(--interactive-accent, #7c9cff);
+  border: 1.5px solid var(--interactive-accent, #7c9cff);
   border-radius: 6px;
   background: var(--background-primary, #1e1e1e);
   color: var(--text-normal, #dcddde);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--interactive-accent, #7c9cff) 35%, transparent);
+  caret-color: var(--interactive-accent, #7c9cff);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--interactive-accent, #7c9cff) 35%, transparent), 0 4px 14px rgba(0, 0, 0, 0.45);
   outline: none;
   font: inherit;
   line-height: 1.2;

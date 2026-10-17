@@ -69,18 +69,32 @@ export function findAdjacentBadgeRect(textEl: Element): Element | null {
 	const tx = coords.x;
 	const ty = coords.y;
 
+	const anchor = (textEl.getAttribute("text-anchor") || "").toLowerCase();
+
 	const rects = Array.from(parent.children).filter((c) => localName(c) === "rect");
 	for (const r of rects) {
 		const w = num(r.getAttribute("width")) ?? 0;
 		const h = num(r.getAttribute("height")) ?? 0;
 		if (w <= 4 || h <= 4) continue; // Skip thin divider lines
-		if (w > 420 && h > 85) continue; // Skip full card background
-		if (h > 85) continue; // Skip tall card backgrounds
+		if (w > 220 || h > 50) continue; // Skip full card background (badges are small tags/chips)
 
 		const rx = num(r.getAttribute("x")) ?? 0;
 		const ry = num(r.getAttribute("y")) ?? 0;
-		if (tx >= rx - 20 && tx <= rx + w + 20 && ty >= ry - 5 && ty <= ry + h + 20) {
-			return r;
+
+		// Y must be vertically aligned with the badge
+		if (ty < ry - 5 || ty > ry + h + 20) continue;
+
+		// X must be within or centered on the badge bounds
+		if (anchor === "middle") {
+			const badgeCx = rx + w / 2;
+			if (Math.abs(tx - badgeCx) <= Math.max(w * 0.45, 16)) {
+				return r;
+			}
+		} else {
+			// Left-aligned text must start inside the badge rect
+			if (tx >= rx - 5 && tx <= rx + w * 0.7) {
+				return r;
+			}
 		}
 	}
 	return null;
