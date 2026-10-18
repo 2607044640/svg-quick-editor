@@ -684,7 +684,7 @@ export function serializeSvg(el: Element): string {
 	const attrs: string[] = [];
 	for (let i = 0; i < el.attributes.length; i++) {
 		const a = el.attributes[i];
-		if (a.name === "data-a1-svg-path") continue;
+		if (a.name === "data-a1-svg-path" || a.name === "data-a1-pad") continue;
 		if (a.name === "class") {
 			const cleaned = a.value
 				.split(/\s+/)
@@ -907,14 +907,32 @@ export function adaptBackgroundToText(textEl: Element, newText?: string): boolea
 	const textW = measureTextWidth(text, content);
 	if (textW <= 0) return false;
 
-	// Calculate appropriate horizontal padding
-	const curTextW = measureTextWidth(text);
-	let padH = 18; // default 9px per side
-	if (curRectW > curTextW && curRectW - curTextW >= 8 && curRectW - curTextW <= 60) {
-		padH = curRectW - curTextW;
+	// Calculate appropriate horizontal padding:
+	// 1. If previously recorded on the rect, use the established baseline padding.
+	// 2. Standard 28px pills have 18px padding (9px each side); 20px badges have 12px padding.
+	// 3. Otherwise compute proportionally from font-size.
+	let padH = 18;
+	const storedPad = num(bgRect.getAttribute("data-a1-pad"));
+	if (storedPad != null && storedPad >= 6 && storedPad <= 36) {
+		padH = storedPad;
+	} else {
+		const rectH = num(bgRect.getAttribute("height")) || 28;
+		if (Math.abs(rectH - 28) <= 2) {
+			padH = 18;
+		} else if (Math.abs(rectH - 20) <= 2) {
+			padH = 12;
+		} else {
+			const fsAttr = text.getAttribute("font-size");
+			const fs = fsAttr ? parseFloat(fsAttr) : 14;
+			const validFs = Number.isFinite(fs) && fs > 0 ? fs : 14;
+			padH = Math.round(Math.max(12, Math.min(26, validFs * 1.45)) * 10) / 10;
+		}
+		bgRect.setAttribute("data-a1-pad", trimNum(padH));
 	}
 
-	const newRectW = Math.round((textW + padH) * 10) / 10;
+	const rectH = num(bgRect.getAttribute("height")) || 24;
+	const minW = Math.max(rectH, 26);
+	const newRectW = Math.max(minW, Math.round((textW + padH) * 10) / 10);
 	const deltaW = newRectW - curRectW;
 	if (Math.abs(deltaW) < 0.5) return false;
 

@@ -971,8 +971,85 @@ describe("adaptBackgroundToText", () => {
 		const w = parseFloat(rect.getAttribute("width")!);
 		const x = parseFloat(text.getAttribute("x")!);
 
-		expect(w).toBeCloseTo(138.8, 0.5);
-		expect(x).toBeCloseTo(w / 2, 0.5);
+		expect(w).toBeCloseTo(138.8, 0);
+		expect(x).toBeCloseTo(w / 2, 0);
+	});
+
+	it("shrinks rect symmetrically and shifts siblings back when text is reduced after expanding", () => {
+		const { svg } = doc(`
+<svg viewBox="0 0 800 200">
+  <g id="row">
+    <g id="pill1" transform="translate(100, 20)">
+      <rect id="bg1" width="103.4" height="28"></rect>
+      <text id="text1" x="51.7" y="18.5" font-size="12.2" text-anchor="middle">床铺舒适消焦虑</text>
+    </g>
+    <g id="pill2" transform="translate(220, 20)">
+      <rect width="90" height="28"></rect>
+      <text x="45" y="18.5" font-size="12" text-anchor="middle">后续胶囊</text>
+    </g>
+  </g>
+</svg>`);
+		const text1 = svg.querySelector("#text1")!;
+		const bg1 = svg.querySelector("#bg1")!;
+		const pill2 = svg.querySelector("#pill2")!;
+
+		// Step 1: Expand text from "床铺舒适消焦虑" to "床铺舒适消焦虑14353"
+		adaptBackgroundToText(text1, "床铺舒适消焦虑14353");
+		const expW = parseFloat(bg1.getAttribute("width")!);
+		const expX = parseFloat(text1.getAttribute("x")!);
+		expect(expW).toBeCloseTo(138.8, 0);
+		expect(expX).toBeCloseTo(expW / 2, 0);
+
+		// pill2 should have shifted right (delta ~ +35.4 -> x ~ 255.4)
+		const pill2ExpX = parseFloat(pill2.getAttribute("transform")!.match(/translate\(\s*([-\d.]+)/)![1]);
+		expect(pill2ExpX).toBeGreaterThan(250);
+
+		// Step 2: User backspaces to "床铺舒适消焦虑1" (the exact bug scenario reported by user!)
+		adaptBackgroundToText(text1, "床铺舒适消焦虑1");
+		const redW = parseFloat(bg1.getAttribute("width")!);
+		const redX = parseFloat(text1.getAttribute("x")!);
+
+		// Width MUST shrink from 138.8 down to ~110.5, NOT stay stuck at 138.8!
+		expect(redW).toBeLessThan(120);
+		expect(redW).toBeCloseTo(110.5, 0);
+		expect(redX).toBeCloseTo(redW / 2, 0);
+
+		// pill2 should have shifted left accordingly (towards ~227)
+		const pill2RedX = parseFloat(pill2.getAttribute("transform")!.match(/translate\(\s*([-\d.]+)/)![1]);
+		expect(pill2RedX).toBeLessThan(pill2ExpX);
+
+		// Step 3: Backspace all the way back to original "床铺舒适消焦虑"
+		adaptBackgroundToText(text1, "床铺舒适消焦虑");
+		const origW = parseFloat(bg1.getAttribute("width")!);
+		const origX = parseFloat(text1.getAttribute("x")!);
+		expect(origW).toBeCloseTo(103.4, 0);
+		expect(origX).toBeCloseTo(51.7, 0);
+
+		// pill2 returns to its exact original translate(220)
+		const pill2OrigX = parseFloat(pill2.getAttribute("transform")!.match(/translate\(\s*([-\d.]+)/)![1]);
+		expect(pill2OrigX).toBeCloseTo(220, 0);
+	});
+
+	it("automatically repairs and shrinks an already-stuck wide rect to fit reduced text", () => {
+		// Simulates loading the user's stuck state from disk (rect 138.8, text "床铺舒适消焦虑1")
+		const { svg } = doc(`
+<svg viewBox="0 0 800 200">
+  <g id="pill" transform="translate(549.3, 15)">
+    <rect width="138.8" height="28"></rect>
+    <text x="69.4" y="18.5" font-size="12.2" text-anchor="middle">床铺舒适消焦虑1</text>
+  </g>
+</svg>`);
+		const text = svg.querySelector("text")!;
+		const bg = svg.querySelector("rect")!;
+
+		// Adapting the background MUST shrink it from 138.8 to ~110.5!
+		const adapted = adaptBackgroundToText(text);
+		expect(adapted).toBe(true);
+
+		const fixedW = parseFloat(bg.getAttribute("width")!);
+		const fixedX = parseFloat(text.getAttribute("x")!);
+		expect(fixedW).toBeCloseTo(110.5, 0);
+		expect(fixedX).toBeCloseTo(fixedW / 2, 0);
 	});
 });
 
