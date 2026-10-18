@@ -1803,7 +1803,7 @@ function getLocaleStrings() {
       noticeHoverTextPrompt: "\u8BF7\u5C06\u9F20\u6807\u60AC\u6D6E\u5728 SVG \u5361\u7247\u3001\u6587\u5B57\u6216\u56FE\u7247\u4E0A\u65B9",
       noticeCannotParse: "\u672A\u80FD\u89E3\u6790\u51FA\u6709\u6548\u7684 SVG \u6570\u636E",
       btnDeleteSvg: "\u5220\u9664 SVG",
-      btnDeleteSvgTip: "\u6C38\u4E45\u5220\u9664\u6B64 SVG \u56FE\u50CF\u6587\u4EF6\u5E76\u6E05\u7406\u4EFB\u52A1\u5173\u8054\u94FE\u63A5 (Enter \u786E\u8BA4)",
+      btnDeleteSvgTip: "\u6C38\u4E45\u5220\u9664\u6B64 SVG \u56FE\u50CF\u6587\u4EF6 (Enter \u786E\u8BA4)",
       settingTabTitle: "A1 SVG Quick Editor \u8BBE\u7F6E",
       settingHotkeyName: "\u6253\u5F00 SVG \u56FE\u50CF\u7F16\u8F91\u5668\u5FEB\u6377\u952E",
       settingHotkeyDesc: "\u5F53\u9F20\u6807\u505C\u7559\u5728\u7B14\u8BB0\u4E2D\u7684 SVG \u56FE\u7247\u4E0A\u65F6\u6309\u4E0B\u6B64\u5FEB\u6377\u952E\uFF0C\u6253\u5F00\u5168\u5C4F\u4EA4\u4E92\u5F0F SVG \u7F16\u8F91\u5668\u5F39\u7A97\u3002\u9ED8\u8BA4\uFF1ACtrl+Shift+Alt+I\u3002\u5728\u8F93\u5165\u6846\u4E2D\u53EF\u76F4\u63A5\u6309\u4E0B\u60F3\u8981\u5F55\u5236\u7684\u5FEB\u6377\u952E\u3002",
@@ -1815,7 +1815,7 @@ function getLocaleStrings() {
       settingDeleteResetTooltip: "\u6062\u590D\u9ED8\u8BA4\u5220\u9664\u5FEB\u6377\u952E (Ctrl+Delete)",
       settingDeleteUpdatedNotice: (hk) => `\u5220\u9664 SVG \u5FEB\u6377\u952E\u5DF2\u66F4\u65B0\u4E3A: ${hk}`,
       settingDeleteResetNotice: "\u5DF2\u6062\u590D\u9ED8\u8BA4\u5220\u9664\u5FEB\u6377\u952E: Ctrl+Delete",
-      noticeDeleted: (name) => `SVG \u5DF2\u5220\u9664\u5E76\u89E3\u7ED1\u4EFB\u52A1: ${name}`
+      noticeDeleted: (name) => `SVG \u5DF2\u5220\u9664: ${name}`
     };
   }
   return {
@@ -1849,7 +1849,7 @@ function getLocaleStrings() {
     noticeHoverTextPrompt: "Please hover cursor over an SVG card, text, or image",
     noticeCannotParse: "Failed to resolve valid SVG data",
     btnDeleteSvg: "Delete SVG",
-    btnDeleteSvgTip: "Permanently delete this SVG file and unlink from tasks (Enter to confirm)",
+    btnDeleteSvgTip: "Permanently delete this SVG file (Enter to confirm)",
     settingTabTitle: "A1 SVG Quick Editor Settings",
     settingHotkeyName: "Open SVG Image Editor Hotkey",
     settingHotkeyDesc: "Press this hotkey while hovering over an SVG image in any note to open the interactive SVG editor. Default: Ctrl+Shift+Alt+I. Type directly in the input box to record your hotkey.",
@@ -1861,7 +1861,7 @@ function getLocaleStrings() {
     settingDeleteResetTooltip: "Reset to default delete hotkey (Ctrl+Delete)",
     settingDeleteUpdatedNotice: (hk) => `Delete SVG hotkey updated to: ${hk}`,
     settingDeleteResetNotice: "Reset to default delete hotkey: Ctrl+Delete",
-    noticeDeleted: (name) => `Deleted SVG and unlinked: ${name}`
+    noticeDeleted: (name) => `Deleted SVG: ${name}`
   };
 }
 var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
@@ -3448,7 +3448,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     codeEl.style.wordBreak = "break-all";
     codeEl.textContent = targetPath || name;
     const text2 = document.createElement("div");
-    text2.textContent = "This action will delete the file and remove its link from any task.";
+    text2.textContent = "This action cannot be undone.";
     desc.appendChild(text1);
     desc.appendChild(codeEl);
     desc.appendChild(text2);

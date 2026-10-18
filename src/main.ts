@@ -96,7 +96,7 @@ export function getLocaleStrings() {
 			noticeHoverTextPrompt: "请将鼠标悬浮在 SVG 卡片、文字或图片上方",
 			noticeCannotParse: "未能解析出有效的 SVG 数据",
 			btnDeleteSvg: "删除 SVG",
-			btnDeleteSvgTip: "永久删除此 SVG 图像文件并清理任务关联链接 (Enter 确认)",
+			btnDeleteSvgTip: "永久删除此 SVG 图像文件 (Enter 确认)",
 			settingTabTitle: "A1 SVG Quick Editor 设置",
 			settingHotkeyName: "打开 SVG 图像编辑器快捷键",
 			settingHotkeyDesc: "当鼠标停留在笔记中的 SVG 图片上时按下此快捷键，打开全屏交互式 SVG 编辑器弹窗。默认：Ctrl+Shift+Alt+I。在输入框中可直接按下想要录制的快捷键。",
@@ -108,7 +108,7 @@ export function getLocaleStrings() {
 			settingDeleteResetTooltip: "恢复默认删除快捷键 (Ctrl+Delete)",
 			settingDeleteUpdatedNotice: (hk: string) => `删除 SVG 快捷键已更新为: ${hk}`,
 			settingDeleteResetNotice: "已恢复默认删除快捷键: Ctrl+Delete",
-			noticeDeleted: (name: string) => `SVG 已删除并解绑任务: ${name}`,
+			noticeDeleted: (name: string) => `SVG 已删除: ${name}`,
 		};
 	}
 
@@ -143,7 +143,7 @@ export function getLocaleStrings() {
 		noticeHoverTextPrompt: "Please hover cursor over an SVG card, text, or image",
 		noticeCannotParse: "Failed to resolve valid SVG data",
 		btnDeleteSvg: "Delete SVG",
-		btnDeleteSvgTip: "Permanently delete this SVG file and unlink from tasks (Enter to confirm)",
+		btnDeleteSvgTip: "Permanently delete this SVG file (Enter to confirm)",
 		settingTabTitle: "A1 SVG Quick Editor Settings",
 		settingHotkeyName: "Open SVG Image Editor Hotkey",
 		settingHotkeyDesc: "Press this hotkey while hovering over an SVG image in any note to open the interactive SVG editor. Default: Ctrl+Shift+Alt+I. Type directly in the input box to record your hotkey.",
@@ -155,7 +155,7 @@ export function getLocaleStrings() {
 		settingDeleteResetTooltip: "Reset to default delete hotkey (Ctrl+Delete)",
 		settingDeleteUpdatedNotice: (hk: string) => `Delete SVG hotkey updated to: ${hk}`,
 		settingDeleteResetNotice: "Reset to default delete hotkey: Ctrl+Delete",
-		noticeDeleted: (name: string) => `Deleted SVG and unlinked: ${name}`,
+		noticeDeleted: (name: string) => `Deleted SVG: ${name}`,
 	};
 }
 
@@ -1948,7 +1948,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		codeEl.style.wordBreak = "break-all";
 		codeEl.textContent = targetPath || name;
 		const text2 = document.createElement("div");
-		text2.textContent = "This action will delete the file and remove its link from any task.";
+		text2.textContent = "This action cannot be undone.";
 		desc.appendChild(text1);
 		desc.appendChild(codeEl);
 		desc.appendChild(text2);
