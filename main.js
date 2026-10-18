@@ -3413,6 +3413,18 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     window.addEventListener("keydown", onKey, true);
     saveBtn.focus();
   }
+  isFluentTasksInstalled() {
+    const plugins = this.app.plugins;
+    if (!plugins)
+      return false;
+    return !!(plugins.plugins?.["fluent-tasks"] || plugins.enabledPlugins?.has?.("fluent-tasks"));
+  }
+  isTodoDataSvg(targetPath) {
+    if (!targetPath)
+      return false;
+    const clean = targetPath.replace(/\\/g, "/").toLowerCase();
+    return clean.startsWith("tododata/") || clean.includes("/tododata/") || clean === "tododata";
+  }
   async getLinkedTasksInfo(targetPath) {
     if (!targetPath)
       return { count: 0, titles: [] };
@@ -3463,7 +3475,10 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       return;
     }
     void (async () => {
-      const linkedInfo = await this.getLinkedTasksInfo(targetPath);
+      let linkedInfo = void 0;
+      if (this.isFluentTasksInstalled() && this.isTodoDataSvg(targetPath)) {
+        linkedInfo = await this.getLinkedTasksInfo(targetPath);
+      }
       this.showDeleteConfirmDialog(
         targetPath,
         async () => {
@@ -3505,7 +3520,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       text2.textContent = `This file is linked to ${countStr}${preview}. Deleting it will also remove the link from the task${count > 1 ? "s" : ""}.`;
       text2.style.color = "var(--text-warning, #f59e0b)";
     } else {
-      text2.textContent = "This file is not linked to any tasks. This action cannot be undone.";
+      text2.textContent = "This action cannot be undone.";
       text2.style.color = "var(--text-muted, #9ca3af)";
     }
     desc.appendChild(text1);
@@ -3584,7 +3599,10 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       } catch (err) {
         console.error("Failed to delete SVG file:", err);
       }
-      await this.cleanupFluentTasksSvgLinks(targetPath);
+      if (this.isFluentTasksInstalled() && this.isTodoDataSvg(targetPath)) {
+        await this.cleanupFluentTasksSvgLinks(targetPath);
+      }
+      await this.cleanupSvgEmbedsInNotes(targetPath);
     }
     if (this.activeModal) {
       this.activeModal.remove();
@@ -3605,6 +3623,60 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       new import_obsidian.Notice(getLocaleStrings().noticeDeleted(name));
     } else {
       new import_obsidian.Notice(getLocaleStrings().noticeDeletedNoLink(name));
+    }
+  }
+  async cleanupSvgEmbedsInNotes(targetPath) {
+    if (!targetPath)
+      return;
+    const cleanTarget = targetPath.replace(/\\/g, "/").trim();
+    const filename = cleanTarget.split("/").pop() || "";
+    if (!filename)
+      return;
+    const escapedName = filename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const embedRegexes = [
+      new RegExp(`!?\\[\\[(?:[^\\]]*\\/)?${escapedName}(?:\\|[^\\]]*)?\\]\\]`, "gi"),
+      new RegExp(`!?\\[[^\\]]*\\]\\([^)]*${escapedName}[^)]*\\)`, "gi")
+    ];
+    try {
+      const files = this.app.vault.getFiles().filter((f) => f.extension === "md");
+      for (const file of files) {
+        const content = await this.app.vault.read(file);
+        if (!content.includes(filename))
+          continue;
+        let modified = false;
+        const lines = content.split("\n");
+        const newLines = [];
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          let isPureEmbed = false;
+          for (const rx of embedRegexes) {
+            rx.lastIndex = 0;
+            const match = rx.exec(line.trim());
+            if (match && match[0] === line.trim()) {
+              isPureEmbed = true;
+              break;
+            }
+          }
+          if (isPureEmbed) {
+            modified = true;
+            continue;
+          }
+          let newLine = line;
+          for (const rx of embedRegexes) {
+            rx.lastIndex = 0;
+            if (rx.test(newLine)) {
+              newLine = newLine.replace(rx, "").trimEnd();
+              modified = true;
+            }
+          }
+          newLines.push(newLine);
+        }
+        if (modified) {
+          await this.app.vault.modify(file, newLines.join("\n"));
+        }
+      }
+    } catch (err) {
+      console.error("Failed to clean up SVG embeds in notes:", err);
     }
   }
   async cleanupFluentTasksSvgLinks(targetPath) {

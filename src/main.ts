@@ -1903,6 +1903,21 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		saveBtn.focus();
 	}
 
+	public isFluentTasksInstalled(): boolean {
+		const plugins = (this.app as any).plugins;
+		if (!plugins) return false;
+		return !!(
+			plugins.plugins?.["fluent-tasks"] ||
+			plugins.enabledPlugins?.has?.("fluent-tasks")
+		);
+	}
+
+	public isTodoDataSvg(targetPath: string): boolean {
+		if (!targetPath) return false;
+		const clean = targetPath.replace(/\\/g, "/").toLowerCase();
+		return clean.startsWith("tododata/") || clean.includes("/tododata/") || clean === "tododata";
+	}
+
 	public async getLinkedTasksInfo(targetPath: string): Promise<{ count: number; titles: string[] }> {
 		if (!targetPath) return { count: 0, titles: [] };
 		const cleanTarget = targetPath.replace(/\\/g, "/").trim();
@@ -1954,7 +1969,13 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		}
 
 		void (async () => {
-			const linkedInfo = await this.getLinkedTasksInfo(targetPath);
+			let linkedInfo: { count: number; titles: string[] } | undefined = undefined;
+
+			// ONLY detect tasks if fluent-tasks plugin is installed AND the SVG is in a TodoData related folder!
+			if (this.isFluentTasksInstalled() && this.isTodoDataSvg(targetPath)) {
+				linkedInfo = await this.getLinkedTasksInfo(targetPath);
+			}
+
 			this.showDeleteConfirmDialog(
 				targetPath,
 				async () => {
@@ -2006,7 +2027,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			text2.textContent = `This file is linked to ${countStr}${preview}. Deleting it will also remove the link from the task${count > 1 ? "s" : ""}.`;
 			text2.style.color = "var(--text-warning, #f59e0b)";
 		} else {
-			text2.textContent = "This file is not linked to any tasks. This action cannot be undone.";
+			text2.textContent = "This action cannot be undone.";
 			text2.style.color = "var(--text-muted, #9ca3af)";
 		}
 
@@ -2100,11 +2121,16 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 				console.error("Failed to delete SVG file:", err);
 			}
 
-			// 2. Scan and remove references from fluent-tasks (TodoData/*.md)
-			await this.cleanupFluentTasksSvgLinks(targetPath);
+			// 2. Scan and remove references from fluent-tasks (ONLY if fluent-tasks is installed and it's a TodoData file)
+			if (this.isFluentTasksInstalled() && this.isTodoDataSvg(targetPath)) {
+				await this.cleanupFluentTasksSvgLinks(targetPath);
+			}
+
+			// 3. Clean up any broken embeds in notes so no "could not be found" is left
+			await this.cleanupSvgEmbedsInNotes(targetPath);
 		}
 
-		// 3. Close the modal dialog cleanly
+		// 4. Close the modal dialog cleanly
 		if (this.activeModal) {
 			this.activeModal.remove();
 			this.activeModal = null;
@@ -2114,7 +2140,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			this.currentModalSvg = null;
 		}
 
-		// 4. Dispatch events to notify all components and views
+		// 5. Dispatch events to notify all components and views
 		window.dispatchEvent(new CustomEvent("a1-svg-updated", {
 			detail: { path: targetPath, deleted: true }
 		}));
@@ -2127,6 +2153,65 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			new Notice(getLocaleStrings().noticeDeleted(name));
 		} else {
 			new Notice(getLocaleStrings().noticeDeletedNoLink(name));
+		}
+	}
+
+	public async cleanupSvgEmbedsInNotes(targetPath: string): Promise<void> {
+		if (!targetPath) return;
+		const cleanTarget = targetPath.replace(/\\/g, "/").trim();
+		const filename = cleanTarget.split("/").pop() || "";
+		if (!filename) return;
+
+		const escapedName = filename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		const embedRegexes = [
+			new RegExp(`!?\\[\\[(?:[^\\]]*\\/)?${escapedName}(?:\\|[^\\]]*)?\\]\\]`, "gi"),
+			new RegExp(`!?\\[[^\\]]*\\]\\([^)]*${escapedName}[^)]*\\)`, "gi"),
+		];
+
+		try {
+			const files = this.app.vault.getFiles().filter(f => f.extension === "md");
+			for (const file of files) {
+				const content = await this.app.vault.read(file);
+				if (!content.includes(filename)) continue;
+
+				let modified = false;
+				const lines = content.split("\n");
+				const newLines: string[] = [];
+
+				for (let i = 0; i < lines.length; i++) {
+					const line = lines[i];
+					let isPureEmbed = false;
+					for (const rx of embedRegexes) {
+						rx.lastIndex = 0;
+						const match = rx.exec(line.trim());
+						if (match && match[0] === line.trim()) {
+							isPureEmbed = true;
+							break;
+						}
+					}
+
+					if (isPureEmbed) {
+						modified = true;
+						continue;
+					}
+
+					let newLine = line;
+					for (const rx of embedRegexes) {
+						rx.lastIndex = 0;
+						if (rx.test(newLine)) {
+							newLine = newLine.replace(rx, "").trimEnd();
+							modified = true;
+						}
+					}
+					newLines.push(newLine);
+				}
+
+				if (modified) {
+					await this.app.vault.modify(file, newLines.join("\n"));
+				}
+			}
+		} catch (err) {
+			console.error("Failed to clean up SVG embeds in notes:", err);
 		}
 	}
 
