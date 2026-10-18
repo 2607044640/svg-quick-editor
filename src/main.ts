@@ -96,7 +96,7 @@ export function getLocaleStrings() {
 			noticeHoverTextPrompt: "请将鼠标悬浮在 SVG 卡片、文字或图片上方",
 			noticeCannotParse: "未能解析出有效的 SVG 数据",
 			btnDeleteSvg: "删除 SVG",
-			btnDeleteSvgTip: "永久删除此 SVG 图像文件 (Enter 确认)",
+			btnDeleteSvgTip: "永久删除此 SVG 图像文件并清理任务关联链接 (Enter 确认)",
 			settingTabTitle: "A1 SVG Quick Editor 设置",
 			settingHotkeyName: "打开 SVG 图像编辑器快捷键",
 			settingHotkeyDesc: "当鼠标停留在笔记中的 SVG 图片上时按下此快捷键，打开全屏交互式 SVG 编辑器弹窗。默认：Ctrl+Shift+Alt+I。在输入框中可直接按下想要录制的快捷键。",
@@ -108,7 +108,8 @@ export function getLocaleStrings() {
 			settingDeleteResetTooltip: "恢复默认删除快捷键 (Ctrl+Delete)",
 			settingDeleteUpdatedNotice: (hk: string) => `删除 SVG 快捷键已更新为: ${hk}`,
 			settingDeleteResetNotice: "已恢复默认删除快捷键: Ctrl+Delete",
-			noticeDeleted: (name: string) => `SVG 已删除: ${name}`,
+			noticeDeleted: (name: string) => `SVG 已删除并解绑任务: ${name}`,
+			noticeDeletedNoLink: (name: string) => `SVG 已删除: ${name}`,
 		};
 	}
 
@@ -143,7 +144,7 @@ export function getLocaleStrings() {
 		noticeHoverTextPrompt: "Please hover cursor over an SVG card, text, or image",
 		noticeCannotParse: "Failed to resolve valid SVG data",
 		btnDeleteSvg: "Delete SVG",
-		btnDeleteSvgTip: "Permanently delete this SVG file (Enter to confirm)",
+		btnDeleteSvgTip: "Permanently delete this SVG file and unlink from tasks (Enter to confirm)",
 		settingTabTitle: "A1 SVG Quick Editor Settings",
 		settingHotkeyName: "Open SVG Image Editor Hotkey",
 		settingHotkeyDesc: "Press this hotkey while hovering over an SVG image in any note to open the interactive SVG editor. Default: Ctrl+Shift+Alt+I. Type directly in the input box to record your hotkey.",
@@ -155,7 +156,8 @@ export function getLocaleStrings() {
 		settingDeleteResetTooltip: "Reset to default delete hotkey (Ctrl+Delete)",
 		settingDeleteUpdatedNotice: (hk: string) => `Delete SVG hotkey updated to: ${hk}`,
 		settingDeleteResetNotice: "Reset to default delete hotkey: Ctrl+Delete",
-		noticeDeleted: (name: string) => `Deleted SVG: ${name}`,
+		noticeDeleted: (name: string) => `Deleted SVG and unlinked: ${name}`,
+		noticeDeletedNoLink: (name: string) => `Deleted SVG: ${name}`,
 	};
 }
 
@@ -1901,6 +1903,48 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		saveBtn.focus();
 	}
 
+	public async getLinkedTasksInfo(targetPath: string): Promise<{ count: number; titles: string[] }> {
+		if (!targetPath) return { count: 0, titles: [] };
+		const cleanTarget = targetPath.replace(/\\/g, "/").trim();
+		const filename = cleanTarget.split("/").pop() || "";
+		if (!filename) return { count: 0, titles: [] };
+
+		const titles: string[] = [];
+		try {
+			const files = this.app.vault.getFiles();
+			const todoFiles = files.filter(f => f.extension === "md" && (f.path.startsWith("TodoData/") || f.path.includes("TodoData")));
+			for (const file of todoFiles) {
+				const content = await this.app.vault.read(file);
+				if (!content.includes("%%{") || !content.includes("svgs")) continue;
+				const lines = content.split("\n");
+				for (const line of lines) {
+					const match = line.match(/%%(\{.*?\})%%/);
+					if (!match) continue;
+					try {
+						const meta = JSON.parse(match[1]);
+						if (Array.isArray(meta.svgs) && meta.svgs.length > 0) {
+							const isLinked = meta.svgs.some((s: string) => {
+								if (typeof s !== "string") return false;
+								const clean = s.replace(/\\/g, "/").replace(/^\[\[/, "").replace(/\]\]$/, "").split("|")[0].trim();
+								return clean === cleanTarget ||
+									clean.endsWith("/" + filename) ||
+									cleanTarget.endsWith("/" + clean) ||
+									clean.split("/").pop() === filename;
+							});
+							if (isLinked) {
+								const rawTitle = line.replace(/^- \[([ x])\]\s*/, "").replace(/\s*%%\{.*?\}%%/, "").trim();
+								titles.push(rawTitle || "Untitled task");
+							}
+						}
+					} catch {}
+				}
+			}
+		} catch (err) {
+			console.error("Failed to detect linked tasks:", err);
+		}
+		return { count: titles.length, titles };
+	}
+
 	public promptDeleteActiveSvg(): void {
 		const targetPath = this.currentModalPath ||
 			(document.querySelector(".svg-lightbox-content svg, .a1-svg-modal-body svg")?.getAttribute("data-a1-svg-path") || "");
@@ -1909,22 +1953,27 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			return;
 		}
 
-		this.showDeleteConfirmDialog(
-			targetPath,
-			async () => {
-				await this.deleteActiveSvg();
-			},
-			() => {
-				const dialog = this.activeModal?.querySelector(".a1-svg-modal-dialog") as HTMLElement | null;
-				dialog?.focus();
-			}
-		);
+		void (async () => {
+			const linkedInfo = await this.getLinkedTasksInfo(targetPath);
+			this.showDeleteConfirmDialog(
+				targetPath,
+				async () => {
+					await this.deleteActiveSvg(linkedInfo);
+				},
+				() => {
+					const dialog = this.activeModal?.querySelector(".a1-svg-modal-dialog") as HTMLElement | null;
+					dialog?.focus();
+				},
+				linkedInfo
+			);
+		})();
 	}
 
 	private showDeleteConfirmDialog(
 		targetPath: string,
 		onConfirm: () => Promise<void> | void,
-		onCancel: () => void
+		onCancel: () => void,
+		linkedInfo?: { count: number; titles: string[] }
 	): void {
 		const overlay = document.createElement("div");
 		overlay.className = "a1-svg-confirm-overlay";
@@ -1947,8 +1996,20 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		codeEl.style.opacity = "0.85";
 		codeEl.style.wordBreak = "break-all";
 		codeEl.textContent = targetPath || name;
+
 		const text2 = document.createElement("div");
-		text2.textContent = "This action cannot be undone.";
+		text2.style.marginTop = "6px";
+		const count = linkedInfo?.count ?? 0;
+		if (count > 0) {
+			const countStr = count === 1 ? "1 task" : `${count} tasks`;
+			const preview = linkedInfo?.titles?.[0] ? ` ("${linkedInfo.titles[0].slice(0, 36)}${linkedInfo.titles[0].length > 36 ? '...' : ''}")` : "";
+			text2.textContent = `This file is linked to ${countStr}${preview}. Deleting it will also remove the link from the task${count > 1 ? "s" : ""}.`;
+			text2.style.color = "var(--text-warning, #f59e0b)";
+		} else {
+			text2.textContent = "This file is not linked to any tasks. This action cannot be undone.";
+			text2.style.color = "var(--text-muted, #9ca3af)";
+		}
+
 		desc.appendChild(text1);
 		desc.appendChild(codeEl);
 		desc.appendChild(text2);
@@ -2014,7 +2075,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		deleteBtn.focus();
 	}
 
-	public async deleteActiveSvg(): Promise<void> {
+	public async deleteActiveSvg(linkedInfo?: { count: number; titles: string[] }): Promise<void> {
 		const targetPath = this.currentModalPath ||
 			(document.querySelector(".svg-lightbox-content svg, .a1-svg-modal-body svg")?.getAttribute("data-a1-svg-path") || "");
 		const name = targetPath ? (targetPath.split("/").pop() || "SVG") : "SVG";
@@ -2061,7 +2122,12 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			detail: { path: targetPath }
 		}));
 
-		new Notice(getLocaleStrings().noticeDeleted(name));
+		const count = linkedInfo?.count ?? 0;
+		if (count > 0) {
+			new Notice(getLocaleStrings().noticeDeleted(name));
+		} else {
+			new Notice(getLocaleStrings().noticeDeletedNoLink(name));
+		}
 	}
 
 	public async cleanupFluentTasksSvgLinks(targetPath: string): Promise<void> {

@@ -1803,7 +1803,7 @@ function getLocaleStrings() {
       noticeHoverTextPrompt: "\u8BF7\u5C06\u9F20\u6807\u60AC\u6D6E\u5728 SVG \u5361\u7247\u3001\u6587\u5B57\u6216\u56FE\u7247\u4E0A\u65B9",
       noticeCannotParse: "\u672A\u80FD\u89E3\u6790\u51FA\u6709\u6548\u7684 SVG \u6570\u636E",
       btnDeleteSvg: "\u5220\u9664 SVG",
-      btnDeleteSvgTip: "\u6C38\u4E45\u5220\u9664\u6B64 SVG \u56FE\u50CF\u6587\u4EF6 (Enter \u786E\u8BA4)",
+      btnDeleteSvgTip: "\u6C38\u4E45\u5220\u9664\u6B64 SVG \u56FE\u50CF\u6587\u4EF6\u5E76\u6E05\u7406\u4EFB\u52A1\u5173\u8054\u94FE\u63A5 (Enter \u786E\u8BA4)",
       settingTabTitle: "A1 SVG Quick Editor \u8BBE\u7F6E",
       settingHotkeyName: "\u6253\u5F00 SVG \u56FE\u50CF\u7F16\u8F91\u5668\u5FEB\u6377\u952E",
       settingHotkeyDesc: "\u5F53\u9F20\u6807\u505C\u7559\u5728\u7B14\u8BB0\u4E2D\u7684 SVG \u56FE\u7247\u4E0A\u65F6\u6309\u4E0B\u6B64\u5FEB\u6377\u952E\uFF0C\u6253\u5F00\u5168\u5C4F\u4EA4\u4E92\u5F0F SVG \u7F16\u8F91\u5668\u5F39\u7A97\u3002\u9ED8\u8BA4\uFF1ACtrl+Shift+Alt+I\u3002\u5728\u8F93\u5165\u6846\u4E2D\u53EF\u76F4\u63A5\u6309\u4E0B\u60F3\u8981\u5F55\u5236\u7684\u5FEB\u6377\u952E\u3002",
@@ -1815,7 +1815,8 @@ function getLocaleStrings() {
       settingDeleteResetTooltip: "\u6062\u590D\u9ED8\u8BA4\u5220\u9664\u5FEB\u6377\u952E (Ctrl+Delete)",
       settingDeleteUpdatedNotice: (hk) => `\u5220\u9664 SVG \u5FEB\u6377\u952E\u5DF2\u66F4\u65B0\u4E3A: ${hk}`,
       settingDeleteResetNotice: "\u5DF2\u6062\u590D\u9ED8\u8BA4\u5220\u9664\u5FEB\u6377\u952E: Ctrl+Delete",
-      noticeDeleted: (name) => `SVG \u5DF2\u5220\u9664: ${name}`
+      noticeDeleted: (name) => `SVG \u5DF2\u5220\u9664\u5E76\u89E3\u7ED1\u4EFB\u52A1: ${name}`,
+      noticeDeletedNoLink: (name) => `SVG \u5DF2\u5220\u9664: ${name}`
     };
   }
   return {
@@ -1849,7 +1850,7 @@ function getLocaleStrings() {
     noticeHoverTextPrompt: "Please hover cursor over an SVG card, text, or image",
     noticeCannotParse: "Failed to resolve valid SVG data",
     btnDeleteSvg: "Delete SVG",
-    btnDeleteSvgTip: "Permanently delete this SVG file (Enter to confirm)",
+    btnDeleteSvgTip: "Permanently delete this SVG file and unlink from tasks (Enter to confirm)",
     settingTabTitle: "A1 SVG Quick Editor Settings",
     settingHotkeyName: "Open SVG Image Editor Hotkey",
     settingHotkeyDesc: "Press this hotkey while hovering over an SVG image in any note to open the interactive SVG editor. Default: Ctrl+Shift+Alt+I. Type directly in the input box to record your hotkey.",
@@ -1861,7 +1862,8 @@ function getLocaleStrings() {
     settingDeleteResetTooltip: "Reset to default delete hotkey (Ctrl+Delete)",
     settingDeleteUpdatedNotice: (hk) => `Delete SVG hotkey updated to: ${hk}`,
     settingDeleteResetNotice: "Reset to default delete hotkey: Ctrl+Delete",
-    noticeDeleted: (name) => `Deleted SVG: ${name}`
+    noticeDeleted: (name) => `Deleted SVG and unlinked: ${name}`,
+    noticeDeletedNoLink: (name) => `Deleted SVG: ${name}`
   };
 }
 var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
@@ -3411,24 +3413,71 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     window.addEventListener("keydown", onKey, true);
     saveBtn.focus();
   }
+  async getLinkedTasksInfo(targetPath) {
+    if (!targetPath)
+      return { count: 0, titles: [] };
+    const cleanTarget = targetPath.replace(/\\/g, "/").trim();
+    const filename = cleanTarget.split("/").pop() || "";
+    if (!filename)
+      return { count: 0, titles: [] };
+    const titles = [];
+    try {
+      const files = this.app.vault.getFiles();
+      const todoFiles = files.filter((f) => f.extension === "md" && (f.path.startsWith("TodoData/") || f.path.includes("TodoData")));
+      for (const file of todoFiles) {
+        const content = await this.app.vault.read(file);
+        if (!content.includes("%%{") || !content.includes("svgs"))
+          continue;
+        const lines = content.split("\n");
+        for (const line of lines) {
+          const match = line.match(/%%(\{.*?\})%%/);
+          if (!match)
+            continue;
+          try {
+            const meta = JSON.parse(match[1]);
+            if (Array.isArray(meta.svgs) && meta.svgs.length > 0) {
+              const isLinked = meta.svgs.some((s) => {
+                if (typeof s !== "string")
+                  return false;
+                const clean = s.replace(/\\/g, "/").replace(/^\[\[/, "").replace(/\]\]$/, "").split("|")[0].trim();
+                return clean === cleanTarget || clean.endsWith("/" + filename) || cleanTarget.endsWith("/" + clean) || clean.split("/").pop() === filename;
+              });
+              if (isLinked) {
+                const rawTitle = line.replace(/^- \[([ x])\]\s*/, "").replace(/\s*%%\{.*?\}%%/, "").trim();
+                titles.push(rawTitle || "Untitled task");
+              }
+            }
+          } catch {
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Failed to detect linked tasks:", err);
+    }
+    return { count: titles.length, titles };
+  }
   promptDeleteActiveSvg() {
     const targetPath = this.currentModalPath || (document.querySelector(".svg-lightbox-content svg, .a1-svg-modal-body svg")?.getAttribute("data-a1-svg-path") || "");
     if (!targetPath && !this.currentModalSvg) {
       new import_obsidian.Notice(getLocaleStrings().noticeHoverSvgPrompt);
       return;
     }
-    this.showDeleteConfirmDialog(
-      targetPath,
-      async () => {
-        await this.deleteActiveSvg();
-      },
-      () => {
-        const dialog = this.activeModal?.querySelector(".a1-svg-modal-dialog");
-        dialog?.focus();
-      }
-    );
+    void (async () => {
+      const linkedInfo = await this.getLinkedTasksInfo(targetPath);
+      this.showDeleteConfirmDialog(
+        targetPath,
+        async () => {
+          await this.deleteActiveSvg(linkedInfo);
+        },
+        () => {
+          const dialog = this.activeModal?.querySelector(".a1-svg-modal-dialog");
+          dialog?.focus();
+        },
+        linkedInfo
+      );
+    })();
   }
-  showDeleteConfirmDialog(targetPath, onConfirm, onCancel) {
+  showDeleteConfirmDialog(targetPath, onConfirm, onCancel, linkedInfo) {
     const overlay = document.createElement("div");
     overlay.className = "a1-svg-confirm-overlay";
     const card = document.createElement("div");
@@ -3448,7 +3497,17 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     codeEl.style.wordBreak = "break-all";
     codeEl.textContent = targetPath || name;
     const text2 = document.createElement("div");
-    text2.textContent = "This action cannot be undone.";
+    text2.style.marginTop = "6px";
+    const count = linkedInfo?.count ?? 0;
+    if (count > 0) {
+      const countStr = count === 1 ? "1 task" : `${count} tasks`;
+      const preview = linkedInfo?.titles?.[0] ? ` ("${linkedInfo.titles[0].slice(0, 36)}${linkedInfo.titles[0].length > 36 ? "..." : ""}")` : "";
+      text2.textContent = `This file is linked to ${countStr}${preview}. Deleting it will also remove the link from the task${count > 1 ? "s" : ""}.`;
+      text2.style.color = "var(--text-warning, #f59e0b)";
+    } else {
+      text2.textContent = "This file is not linked to any tasks. This action cannot be undone.";
+      text2.style.color = "var(--text-muted, #9ca3af)";
+    }
     desc.appendChild(text1);
     desc.appendChild(codeEl);
     desc.appendChild(text2);
@@ -3504,7 +3563,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     window.addEventListener("keydown", onKey, true);
     deleteBtn.focus();
   }
-  async deleteActiveSvg() {
+  async deleteActiveSvg(linkedInfo) {
     const targetPath = this.currentModalPath || (document.querySelector(".svg-lightbox-content svg, .a1-svg-modal-body svg")?.getAttribute("data-a1-svg-path") || "");
     const name = targetPath ? targetPath.split("/").pop() || "SVG" : "SVG";
     if (targetPath) {
@@ -3541,7 +3600,12 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     window.dispatchEvent(new CustomEvent("fluent-tasks-svg-deleted", {
       detail: { path: targetPath }
     }));
-    new import_obsidian.Notice(getLocaleStrings().noticeDeleted(name));
+    const count = linkedInfo?.count ?? 0;
+    if (count > 0) {
+      new import_obsidian.Notice(getLocaleStrings().noticeDeleted(name));
+    } else {
+      new import_obsidian.Notice(getLocaleStrings().noticeDeletedNoLink(name));
+    }
   }
   async cleanupFluentTasksSvgLinks(targetPath) {
     if (!targetPath)
