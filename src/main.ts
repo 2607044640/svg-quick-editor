@@ -11,10 +11,12 @@ const SVG_PATH_ATTR = "data-a1-svg-path";
 
 interface A1SvgQuickEditorSettings {
 	openEditorHotkey: string; // e.g. "Ctrl+Shift+Alt+I"
+	deleteSvgHotkey: string; // e.g. "Ctrl+Delete"
 }
 
 const DEFAULT_SETTINGS: A1SvgQuickEditorSettings = {
 	openEditorHotkey: "Ctrl+Shift+Alt+I",
+	deleteSvgHotkey: "Ctrl+Delete",
 };
 
 export function isDiagramSvg(el: Element | null): el is SVGSVGElement {
@@ -93,12 +95,20 @@ export function getLocaleStrings() {
 			noticeHoverSvgPrompt: "请将鼠标悬浮在笔记中的 SVG 图片上方",
 			noticeHoverTextPrompt: "请将鼠标悬浮在 SVG 卡片、文字或图片上方",
 			noticeCannotParse: "未能解析出有效的 SVG 数据",
+			btnDeleteSvg: "删除 SVG",
+			btnDeleteSvgTip: "永久删除此 SVG 图像文件并清理任务关联链接 (Enter 确认)",
 			settingTabTitle: "A1 SVG Quick Editor 设置",
 			settingHotkeyName: "打开 SVG 图像编辑器快捷键",
 			settingHotkeyDesc: "当鼠标停留在笔记中的 SVG 图片上时按下此快捷键，打开全屏交互式 SVG 编辑器弹窗。默认：Ctrl+Shift+Alt+I。在输入框中可直接按下想要录制的快捷键。",
 			settingResetTooltip: "恢复默认快捷键 (Ctrl+Shift+Alt+I)",
 			settingUpdatedNotice: (hk: string) => `SVG 编辑快捷键已更新为: ${hk}`,
 			settingResetNotice: "已恢复默认快捷键: Ctrl+Shift+Alt+I",
+			settingDeleteHotkeyName: "删除当前 SVG 快捷键",
+			settingDeleteHotkeyDesc: "在 SVG 编辑弹窗中按下此快捷键可触发删除确认弹窗。默认：Ctrl+Delete。在输入框中可直接按下想要录制的快捷键。",
+			settingDeleteResetTooltip: "恢复默认删除快捷键 (Ctrl+Delete)",
+			settingDeleteUpdatedNotice: (hk: string) => `删除 SVG 快捷键已更新为: ${hk}`,
+			settingDeleteResetNotice: "已恢复默认删除快捷键: Ctrl+Delete",
+			noticeDeleted: (name: string) => `SVG 已删除并解绑任务: ${name}`,
 		};
 	}
 
@@ -132,12 +142,20 @@ export function getLocaleStrings() {
 		noticeHoverSvgPrompt: "Please hover cursor over an SVG image in the note",
 		noticeHoverTextPrompt: "Please hover cursor over an SVG card, text, or image",
 		noticeCannotParse: "Failed to resolve valid SVG data",
+		btnDeleteSvg: "Delete SVG",
+		btnDeleteSvgTip: "Permanently delete this SVG file and unlink from tasks (Enter to confirm)",
 		settingTabTitle: "A1 SVG Quick Editor Settings",
 		settingHotkeyName: "Open SVG Image Editor Hotkey",
 		settingHotkeyDesc: "Press this hotkey while hovering over an SVG image in any note to open the interactive SVG editor. Default: Ctrl+Shift+Alt+I. Type directly in the input box to record your hotkey.",
 		settingResetTooltip: "Reset to default hotkey (Ctrl+Shift+Alt+I)",
 		settingUpdatedNotice: (hk: string) => `SVG editor hotkey updated to: ${hk}`,
 		settingResetNotice: "Reset to default hotkey: Ctrl+Shift+Alt+I",
+		settingDeleteHotkeyName: "Delete Active SVG Hotkey",
+		settingDeleteHotkeyDesc: "Press this hotkey while in the SVG editor to trigger the delete confirmation prompt. Default: Ctrl+Delete. Type directly in the input box to record your hotkey.",
+		settingDeleteResetTooltip: "Reset to default delete hotkey (Ctrl+Delete)",
+		settingDeleteUpdatedNotice: (hk: string) => `Delete SVG hotkey updated to: ${hk}`,
+		settingDeleteResetNotice: "Reset to default delete hotkey: Ctrl+Delete",
+		noticeDeleted: (name: string) => `Deleted SVG and unlinked: ${name}`,
 	};
 }
 
@@ -369,6 +387,17 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 				this.smartLayout();
 			},
 		});
+
+		this.addCommand({
+			id: "delete-active-svg",
+			name: "Delete active SVG (with confirmation)",
+			checkCallback: (checking: boolean) => {
+				const hasModal = !!(this.activeModal || document.querySelector(".a1-svg-modal-dialog, .svg-lightbox-modal"));
+				if (checking) return hasModal;
+				void this.promptDeleteActiveSvg();
+				return true;
+			},
+		});
 	}
 
 	onunload(): void {
@@ -458,6 +487,37 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 				"svg-quick-editor:open-svg-image-editor",
 				"a1-svg-quick-editor:edit-svg-text",
 				"a1-svg-quick-editor:open-svg-image-editor"
+			];
+			for (const id of commandIds) {
+				const list: HotkeyEntry[] = [
+					...(hkMgr.getHotkeys?.(id) || []),
+					...(hkMgr.customKeys?.[id] || []),
+					...(hkMgr.defaultKeys?.[id] || [])
+				];
+				for (const hk of list) {
+					if (this.matchesObsidianHotkey(evt, hk)) return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	public isDeleteSvgHotkey(evt: KeyboardEvent): boolean {
+		if (this.settings.deleteSvgHotkey && this.matchesHotkey(evt, this.settings.deleteSvgHotkey)) return true;
+		if (this.matchesHotkey(evt, "Ctrl+Delete") || this.matchesHotkey(evt, "Mod+Delete")) return true;
+
+		interface HotkeyEntry { modifiers?: string[]; key?: string }
+		interface HotkeyManagerLike {
+			getHotkeys?: (id: string) => HotkeyEntry[] | undefined;
+			customKeys?: Record<string, HotkeyEntry[] | undefined>;
+			defaultKeys?: Record<string, HotkeyEntry[] | undefined>;
+		}
+		const hkMgr = (this.app as unknown as { hotkeyManager?: HotkeyManagerLike }).hotkeyManager;
+		if (hkMgr) {
+			const commandIds = [
+				`${this.manifest.id}:delete-active-svg`,
+				"svg-quick-editor:delete-active-svg",
+				"a1-svg-quick-editor:delete-active-svg"
 			];
 			for (const id of commandIds) {
 				const list: HotkeyEntry[] = [
@@ -1622,6 +1682,17 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			actionGroup.appendChild(openInTabBtn);
 		}
 
+		const deleteBtn = document.createElement("button");
+		deleteBtn.type = "button";
+		deleteBtn.className = "a1-svg-modal-tab-btn a1-svg-modal-delete-btn";
+		deleteBtn.textContent = i18n.btnDeleteSvg;
+		deleteBtn.title = i18n.btnDeleteSvgTip;
+		deleteBtn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			this.promptDeleteActiveSvg();
+		});
+		actionGroup.appendChild(deleteBtn);
+
 		const closeBtn = document.createElement("button");
 		closeBtn.type = "button";
 		closeBtn.className = "a1-svg-modal-close";
@@ -1718,6 +1789,13 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 				if (modalSvg) {
 					void this.saveCurrentSvg(modalSvg, true);
 				}
+				return;
+			}
+			if (!this.overlay && !isConfirming && this.isDeleteSvgHotkey(e)) {
+				e.preventDefault();
+				e.stopPropagation();
+				e.stopImmediatePropagation();
+				this.promptDeleteActiveSvg();
 				return;
 			}
 			if (e.key === "Escape" && !this.overlay && !isConfirming) {
@@ -1822,6 +1900,221 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		window.addEventListener("keydown", onKey, true);
 		saveBtn.focus();
 	}
+
+	public promptDeleteActiveSvg(): void {
+		const targetPath = this.currentModalPath ||
+			(document.querySelector(".svg-lightbox-content svg, .a1-svg-modal-body svg")?.getAttribute("data-a1-svg-path") || "");
+		if (!targetPath && !this.currentModalSvg) {
+			new Notice(getLocaleStrings().noticeHoverSvgPrompt);
+			return;
+		}
+
+		this.showDeleteConfirmDialog(
+			targetPath,
+			async () => {
+				await this.deleteActiveSvg();
+			},
+			() => {
+				const dialog = this.activeModal?.querySelector(".a1-svg-modal-dialog") as HTMLElement | null;
+				dialog?.focus();
+			}
+		);
+	}
+
+	private showDeleteConfirmDialog(
+		targetPath: string,
+		onConfirm: () => Promise<void> | void,
+		onCancel: () => void
+	): void {
+		const overlay = document.createElement("div");
+		overlay.className = "a1-svg-confirm-overlay";
+
+		const card = document.createElement("div");
+		card.className = "a1-svg-confirm-dialog";
+
+		const title = document.createElement("div");
+		title.className = "a1-svg-confirm-title";
+		title.style.color = "var(--text-error, #f87171)";
+		title.textContent = "Delete SVG?";
+
+		const desc = document.createElement("div");
+		desc.className = "a1-svg-confirm-desc";
+		const name = targetPath.split("/").pop() || "SVG";
+		const text1 = document.createElement("div");
+		text1.textContent = "Are you sure you want to permanently delete this SVG file?";
+		const codeEl = document.createElement("code");
+		codeEl.style.fontSize = "11.5px";
+		codeEl.style.opacity = "0.85";
+		codeEl.style.wordBreak = "break-all";
+		codeEl.textContent = targetPath || name;
+		const text2 = document.createElement("div");
+		text2.textContent = "This action will delete the file and remove its link from any task.";
+		desc.appendChild(text1);
+		desc.appendChild(codeEl);
+		desc.appendChild(text2);
+
+		const btnRow = document.createElement("div");
+		btnRow.className = "a1-svg-confirm-buttons";
+
+		const deleteBtn = document.createElement("button");
+		deleteBtn.className = "mod-warning";
+		deleteBtn.style.backgroundColor = "var(--text-error, #ef4444)";
+		deleteBtn.style.borderColor = "var(--text-error, #dc2626)";
+		deleteBtn.style.color = "#ffffff";
+		deleteBtn.textContent = "Delete (Enter)";
+
+		const cancelBtn = document.createElement("button");
+		cancelBtn.className = "";
+		cancelBtn.textContent = "Cancel (Esc)";
+
+		btnRow.appendChild(deleteBtn);
+		btnRow.appendChild(cancelBtn);
+
+		card.appendChild(title);
+		card.appendChild(desc);
+		card.appendChild(btnRow);
+		overlay.appendChild(card);
+		document.body.appendChild(overlay);
+
+		const cleanup = () => {
+			overlay.remove();
+			window.removeEventListener("keydown", onKey, true);
+		};
+
+		const doDelete = async () => {
+			cleanup();
+			await onConfirm();
+		};
+
+		const doCancel = () => {
+			cleanup();
+			onCancel();
+		};
+
+		deleteBtn.addEventListener("click", () => void doDelete());
+		cancelBtn.addEventListener("click", doCancel);
+		overlay.addEventListener("click", (e) => {
+			if (e.target === overlay) doCancel();
+		});
+
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === "Enter") {
+				e.preventDefault();
+				e.stopPropagation();
+				e.stopImmediatePropagation();
+				void doDelete();
+			} else if (e.key === "Escape") {
+				e.preventDefault();
+				e.stopPropagation();
+				e.stopImmediatePropagation();
+				doCancel();
+			}
+		};
+		window.addEventListener("keydown", onKey, true);
+		deleteBtn.focus();
+	}
+
+	public async deleteActiveSvg(): Promise<void> {
+		const targetPath = this.currentModalPath ||
+			(document.querySelector(".svg-lightbox-content svg, .a1-svg-modal-body svg")?.getAttribute("data-a1-svg-path") || "");
+		const name = targetPath ? (targetPath.split("/").pop() || "SVG") : "SVG";
+
+		// 1. Delete physical file from vault
+		if (targetPath) {
+			try {
+				let file = this.app.vault.getAbstractFileByPath(targetPath) as TFile | null;
+				if (!file) {
+					file = this.app.metadataCache.getFirstLinkpathDest(targetPath, "");
+				}
+				if (!file) {
+					const clean = targetPath.split("/").pop() || "";
+					file = this.app.vault.getFiles().find(f => f.name === clean || f.path.endsWith("/" + clean)) || null;
+				}
+				if (file) {
+					await this.app.vault.trash(file, true);
+				} else if (await this.app.vault.adapter.exists(targetPath)) {
+					await this.app.vault.adapter.remove(targetPath);
+				}
+			} catch (err) {
+				console.error("Failed to delete SVG file:", err);
+			}
+
+			// 2. Scan and remove references from fluent-tasks (TodoData/*.md)
+			await this.cleanupFluentTasksSvgLinks(targetPath);
+		}
+
+		// 3. Close the modal dialog cleanly
+		if (this.activeModal) {
+			this.activeModal.remove();
+			this.activeModal = null;
+			this.currentModalPath = null;
+			this.currentModalTitle = null;
+			this.currentModalBody = null;
+			this.currentModalSvg = null;
+		}
+
+		// 4. Dispatch events to notify all components and views
+		window.dispatchEvent(new CustomEvent("a1-svg-updated", {
+			detail: { path: targetPath, deleted: true }
+		}));
+		window.dispatchEvent(new CustomEvent("fluent-tasks-svg-deleted", {
+			detail: { path: targetPath }
+		}));
+
+		new Notice(getLocaleStrings().noticeDeleted(name));
+	}
+
+	public async cleanupFluentTasksSvgLinks(targetPath: string): Promise<void> {
+		if (!targetPath) return;
+		const cleanTarget = targetPath.replace(/\\/g, "/").trim();
+		const filename = cleanTarget.split("/").pop() || "";
+		if (!filename) return;
+
+		try {
+			const files = this.app.vault.getFiles();
+			const todoFiles = files.filter(f => f.extension === "md" && (f.path.startsWith("TodoData/") || f.path.includes("TodoData")));
+			for (const file of todoFiles) {
+				const content = await this.app.vault.read(file);
+				if (!content.includes("%%{") || !content.includes("svgs")) continue;
+
+				let modified = false;
+				const newLines = content.split("\n").map(line => {
+					const match = line.match(/%%(\{.*?\})%%/);
+					if (!match) return line;
+					try {
+						const meta = JSON.parse(match[1]);
+						if (Array.isArray(meta.svgs) && meta.svgs.length > 0) {
+							const originalLen = meta.svgs.length;
+							const remaining = meta.svgs.filter((s: string) => {
+								if (typeof s !== "string") return false;
+								const clean = s.replace(/\\/g, "/").trim();
+								if (clean === cleanTarget) return false;
+								if (clean.endsWith("/" + filename) || cleanTarget.endsWith("/" + clean)) return false;
+								if (clean.split("/").pop() === filename) return false;
+								return true;
+							});
+							if (remaining.length !== originalLen) {
+								modified = true;
+								if (remaining.length > 0) {
+									meta.svgs = remaining;
+								} else {
+									delete meta.svgs;
+								}
+								return line.replace(/%%\{.*?\}%%/, `%%${JSON.stringify(meta)}%%`);
+							}
+						}
+					} catch {}
+					return line;
+				});
+
+				if (modified) {
+					await this.app.vault.modify(file, newLines.join("\n"));
+				}
+			}
+		} catch (err) {
+			console.error("Failed to clean up fluent-tasks SVG links:", err);
+		}
+	}
 }
 
 class A1SvgQuickEditorSettingTab extends PluginSettingTab {
@@ -1869,6 +2162,41 @@ class A1SvgQuickEditorSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 						this.display();
 						new Notice(i18n.settingResetNotice);
+					});
+			});
+
+		new Setting(containerEl)
+			.setName(i18n.settingDeleteHotkeyName)
+			.setDesc(i18n.settingDeleteHotkeyDesc)
+			.addText((text) => {
+				text.setValue(this.plugin.settings.deleteSvgHotkey);
+				text.inputEl.addEventListener("keydown", (e) => {
+					if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
+					e.preventDefault();
+					e.stopPropagation();
+					const parts: string[] = [];
+					if (e.ctrlKey) parts.push("Ctrl");
+					if (e.shiftKey) parts.push("Shift");
+					if (e.altKey) parts.push("Alt");
+					if (e.metaKey) parts.push("Cmd");
+					parts.push(e.key.toUpperCase());
+					const combination = parts.join("+");
+					text.setValue(combination);
+					this.plugin.settings.deleteSvgHotkey = combination;
+					void (async () => {
+						await this.plugin.saveSettings();
+						new Notice(i18n.settingDeleteUpdatedNotice(combination));
+					})();
+				});
+			})
+			.addExtraButton((btn) => {
+				btn.setIcon("reset")
+					.setTooltip(i18n.settingDeleteResetTooltip)
+					.onClick(async () => {
+						this.plugin.settings.deleteSvgHotkey = DEFAULT_SETTINGS.deleteSvgHotkey;
+						await this.plugin.saveSettings();
+						this.display();
+						new Notice(i18n.settingDeleteResetNotice);
 					});
 			});
 	}

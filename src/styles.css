@@ -146,6 +146,12 @@ svg.a1-svg-hover-image,
 	color: var(--text-normal, #ffffff);
 }
 
+.a1-svg-modal-tab-btn.a1-svg-modal-delete-btn:hover {
+	background: rgba(239, 68, 68, 0.18);
+	border-color: rgba(239, 68, 68, 0.6);
+	color: #f87171;
+}
+
 .a1-svg-align-guide {
 	stroke: var(--interactive-accent, #7c9cff);
 	stroke-width: 1;
