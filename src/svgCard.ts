@@ -1299,12 +1299,206 @@ interface LayoutItem {
 }
 
 /**
- * Packs UI cards inside an SVG the way a flex column with align-content:flex-start does:
- * titles stay put, cards are the things that move, and a missing outer panel is not required.
- * Sibling cards are never treated as each other's container — that no-op is what made
- * "智能排版" appear dead on a bare stack (title + cards on the canvas).
+ * Detects and aligns horizontal rows of sibling cards/chips:
+ * - Aligns their vertical position (Y) to the row's dominant/baseline Y.
+ * - Aligns their horizontal spacing (X) preserving the established/median gap (e.g. 8px).
  */
-export function smartAutoLayout(svg: Element): SmartLayoutResult {
+export function layoutHorizontalRows(svg: Element): SmartLayoutResult {
+	const hidden = (el: Element) => el.getAttribute("display") === "none" || !!el.closest("[data-a1-align]");
+	const vbAttr = (svg.getAttribute("viewBox") || svg.getAttribute("viewbox") || "").trim().split(/[\s,]+/);
+	const svgW = vbAttr.length === 4 ? parseFloat(vbAttr[2]) : (num(svg.getAttribute("width")) || 800);
+	const svgH = vbAttr.length === 4 ? parseFloat(vbAttr[3]) : (num(svg.getAttribute("height")) || 600);
+
+	const isCanvas = (box: BoxBounds) => {
+		const w = box.right - box.left;
+		const h = box.bottom - box.top;
+		return w >= svgW * 0.92 && h >= svgH * 0.92;
+	};
+
+	// 1. Gather all potential card elements
+	const cardGroups = Array.from(svg.querySelectorAll("g")).filter((g) => {
+		if (hidden(g)) return false;
+		return g.querySelector("text") !== null && g.querySelector("rect, circle, ellipse, path") !== null;
+	});
+	const atomicGroups = cardGroups.filter((g) => !cardGroups.some((other) => other !== g && g.contains(other)));
+
+	interface RowCandidate {
+		el: Element;
+		box: BoxBounds;
+		parent: Element;
+	}
+
+	const candidates: RowCandidate[] = [];
+	for (const g of atomicGroups) {
+		const box = measureBox(g, svg);
+		if (!box || isCanvas(box)) continue;
+		if (g.parentElement) {
+			candidates.push({ el: g, box, parent: g.parentElement });
+		}
+	}
+
+	for (const r of Array.from(svg.querySelectorAll("rect"))) {
+		if (hidden(r)) continue;
+		if (atomicGroups.some((g) => g.contains(r))) continue;
+		const w = num(r.getAttribute("width")) ?? 0;
+		const h = num(r.getAttribute("height")) ?? 0;
+		if (w < 20 || h < 16) continue;
+		const box = measureBox(r, svg);
+		if (!box || isCanvas(box)) continue;
+		if (r.parentElement) {
+			candidates.push({ el: r, box, parent: r.parentElement });
+		}
+	}
+
+	// 2. Group candidates by parent container
+	const parentMap = new Map<Element, RowCandidate[]>();
+	for (const cand of candidates) {
+		let list = parentMap.get(cand.parent);
+		if (!list) {
+			list = [];
+			parentMap.set(cand.parent, list);
+		}
+		list.push(cand);
+	}
+
+	let totalChanged = false;
+	let totalCount = 0;
+
+	// Collect global gaps across all rows to provide an intelligent fallback
+	const allGaps: number[] = [];
+	for (const [, list] of parentMap.entries()) {
+		if (list.length < 2) continue;
+		const sorted = [...list].sort((a, b) => a.box.left - b.box.left);
+		for (let i = 0; i < sorted.length - 1; i++) {
+			const g = sorted[i + 1].box.left - sorted[i].box.right;
+			if (g >= 4 && g <= 48) allGaps.push(g);
+		}
+	}
+	const globalMedianGap = allGaps.length > 0 ? median(allGaps) : 8;
+
+	// 3. For each parent, find horizontal rows of items
+	for (const [parent, list] of parentMap.entries()) {
+		const parentBox = measureBox(parent, svg);
+		const parentW = parentBox ? parentBox.right - parentBox.left : svgW;
+		const filtered = list.filter((it) => {
+			const w = it.box.right - it.box.left;
+			return w < parentW * 0.9;
+		});
+
+		if (filtered.length < 2) continue;
+
+		// Group items into horizontal rows based on vertical overlap
+		const rows: RowCandidate[][] = [];
+		const sorted = [...filtered].sort((a, b) => a.box.left - b.box.left);
+
+		for (const item of sorted) {
+			const itemH = item.box.bottom - item.box.top;
+			let placed = false;
+			for (const row of rows) {
+				const peer = row[0];
+				const peerH = peer.box.bottom - peer.box.top;
+				const overlapY = Math.min(item.box.bottom, peer.box.bottom) - Math.max(item.box.top, peer.box.top);
+				const minH = Math.min(itemH, peerH);
+				if (overlapY >= minH * 0.4) {
+					row.push(item);
+					placed = true;
+					break;
+				}
+			}
+			if (!placed) {
+				rows.push([item]);
+			}
+		}
+
+		for (const row of rows) {
+			if (row.length < 2) continue;
+
+			row.sort((a, b) => a.box.left - b.box.left);
+
+			// Cluster by height to isolate pills from other elements (like category badges or icons)
+			const heights = row.map((it) => it.box.bottom - it.box.top);
+			const rowMedianH = median(heights);
+			const chips = row.filter((it) => {
+				const h = it.box.bottom - it.box.top;
+				return Math.abs(h - rowMedianH) <= Math.max(6, rowMedianH * 0.25);
+			});
+
+			if (chips.length < 2) continue;
+
+			// Determine dominant Y (top)
+			const tops = chips.map((it) => it.box.top);
+			let dominantTop = tops[0];
+			let maxClusterCount = 0;
+			for (const t of tops) {
+				const clusterCount = tops.filter((other) => Math.abs(other - t) <= 1.5).length;
+				if (clusterCount > maxClusterCount) {
+					maxClusterCount = clusterCount;
+					dominantTop = t;
+				}
+			}
+
+			// Determine target gap ("保留距离，参考这图片的间隔")
+			const rowGaps: number[] = [];
+			for (let i = 0; i < chips.length - 1; i++) {
+				const g = chips[i + 1].box.left - chips[i].box.right;
+				if (g >= 2 && g <= 60) rowGaps.push(g);
+			}
+
+			let targetGap = globalMedianGap;
+			if (rowGaps.length > 0) {
+				let bestGap = rowGaps[0];
+				let bestGapCount = 0;
+				for (const g of rowGaps) {
+					const count = rowGaps.filter((other) => Math.abs(other - g) <= 1.5).length;
+					if (count > bestGapCount) {
+						bestGapCount = count;
+						bestGap = g;
+					}
+				}
+				targetGap = bestGapCount >= 2 ? bestGap : median(rowGaps);
+			}
+
+			if (targetGap < 4 || targetGap > 32) {
+				targetGap = globalMedianGap >= 4 && globalMedianGap <= 32 ? globalMedianGap : 8;
+			}
+
+			// Layout chips sequentially
+			let curLeft = chips[0].box.left;
+			for (let i = 0; i < chips.length; i++) {
+				const chip = chips[i];
+				const w = chip.box.right - chip.box.left;
+				const targetLeft = curLeft;
+				const targetTop = dominantTop;
+
+				const dx = targetLeft - chip.box.left;
+				const dy = targetTop - chip.box.top;
+
+				if (Math.abs(dx) > 0.4 || Math.abs(dy) > 0.4) {
+					nudge(chip.el, dx, dy);
+					totalChanged = true;
+					totalCount++;
+					chip.box.left += dx;
+					chip.box.right += dx;
+					chip.box.top += dy;
+					chip.box.bottom += dy;
+				}
+
+				curLeft = chip.box.right + targetGap;
+			}
+		}
+	}
+
+	return { changed: totalChanged, count: totalCount };
+}
+
+function median(values: number[]): number {
+	if (values.length === 0) return 0;
+	const s = [...values].sort((a, b) => a - b);
+	const mid = Math.floor(s.length / 2);
+	return s.length % 2 !== 0 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+export function layoutVerticalColumns(svg: Element): SmartLayoutResult {
 	const vbAttr = (svg.getAttribute("viewBox") || svg.getAttribute("viewbox") || "").trim().split(/[\s,]+/);
 	const svgW = vbAttr.length === 4 ? parseFloat(vbAttr[2]) : (num(svg.getAttribute("width")) || 800);
 	const svgH = vbAttr.length === 4 ? parseFloat(vbAttr[3]) : (num(svg.getAttribute("height")) || 600);
@@ -1388,9 +1582,6 @@ export function smartAutoLayout(svg: Element): SmartLayoutResult {
 		considerFrame(measureBox(r, svg));
 	}
 
-	// A header is text that is not inside a card and sits in the top band, or a
-	// whole group of such text. Comparing against the current card top misses a
-	// title whose baseline is already inside the first card's y range.
 	let headerBottom = frame.top;
 	const topBand = frame.top + (frame.bottom - frame.top) * 0.4;
 	const noteHeader = (box: BoxBounds | null) => {
@@ -1415,8 +1606,6 @@ export function smartAutoLayout(svg: Element): SmartLayoutResult {
 	const availW = rightLimit - leftLimit;
 	if (availH <= 8 || availW <= 8) return { changed: false, count: 0 };
 
-	// A column is cards that actually overlap in x. Center-distance grouping splits a
-	// full-width stack into fake columns and then refuses to move them.
 	const columns: LayoutItem[][] = [];
 	const sorted = [...cards].sort((a, b) => a.box.left - b.box.left || a.box.top - b.box.top);
 	for (const item of sorted) {
@@ -1460,8 +1649,6 @@ export function smartAutoLayout(svg: Element): SmartLayoutResult {
 		} else if (availH > totalH) {
 			const span = totalH + (n - 1) * preferGap;
 			const leftover = availH - span;
-			// Modest leftover: center the block. A large hole (cards stranded at the bottom
-			// after a deletion) packs up under the title instead of floating in the middle.
 			startY = leftover <= 80 ? topLimit + leftover / 2 : topLimit;
 		} else {
 			gap = Math.max(8, (availH - totalH) / (n - 1));
@@ -1474,11 +1661,7 @@ export function smartAutoLayout(svg: Element): SmartLayoutResult {
 		const above = col[0].box.top - headerBottom;
 		const below = frame.bottom - col[col.length - 1].box.bottom;
 		const centeredX = Math.abs((col[0].box.left + col[0].box.right) / 2 - slotCenter) <= 8;
-		// Finished when the column already clears the title, stays inside the frame,
-		// and has no hole above it larger than the one below. Compare against the
-		// title and the frame edge, not the padded target: a hand-tuned margin that
-		// is a few units inside the pad is not stranded, and snapping it up covers
-		// a baseline title.
+
 		const finished = gapSpread <= 4
 			&& gaps.every((g) => g >= 8)
 			&& above >= 8
@@ -1505,3 +1688,30 @@ export function smartAutoLayout(svg: Element): SmartLayoutResult {
 
 	return { changed: totalChanged, count: totalCount };
 }
+
+/**
+ * Intelligent layout for cards and chips inside an SVG:
+ * 1. Automatically aligns horizontal rows of sibling chips (Y-alignment and even spacing referencing existing gaps).
+ * 2. Balances vertical column stacks of cards.
+ */
+export function smartAutoLayout(svg: Element): SmartLayoutResult {
+	let totalChanged = false;
+	let totalCount = 0;
+
+	// Phase 1: Horizontal row alignment of sibling cards/chips
+	const rowRes = layoutHorizontalRows(svg);
+	if (rowRes.changed) {
+		totalChanged = true;
+		totalCount += rowRes.count;
+	}
+
+	// Phase 2: Canvas-level vertical column balancing
+	const colRes = layoutVerticalColumns(svg);
+	if (colRes.changed) {
+		totalChanged = true;
+		totalCount += colRes.count;
+	}
+
+	return { changed: totalChanged, count: totalCount };
+}
+

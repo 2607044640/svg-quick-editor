@@ -1,6 +1,6 @@
 import { parseHTML } from "linkedom";
 import { describe, expect, it } from "vitest";
-import { adaptAllTextBackgrounds, adaptBackgroundToText, cloneCard, collectAlignTargets, commitText, estimateStringWidth, findBackgroundRectForText, findCard, findTextInCard, insertCloneSibling, nudge, resetCloneSeq, resolveCloneTarget, resolveDeleteTarget, resolveHit, resolveScaleTarget, scaleCard, serializeSvg, smartAutoLayout, snapDelta } from "./svgCard";
+import { adaptAllTextBackgrounds, adaptBackgroundToText, cloneCard, collectAlignTargets, commitText, estimateStringWidth, findBackgroundRectForText, findCard, findTextInCard, insertCloneSibling, layoutHorizontalRows, nudge, resetCloneSeq, resolveCloneTarget, resolveDeleteTarget, resolveHit, resolveScaleTarget, scaleCard, serializeSvg, smartAutoLayout, snapDelta } from "./svgCard";
 import { ensureMarker, findSvgSpans, matchSpan, spliceSvg } from "./svgSource";
 import { SvgHistoryManager } from "./svgHistory";
 
@@ -1050,6 +1050,85 @@ describe("adaptBackgroundToText", () => {
 		const fixedX = parseFloat(text.getAttribute("x")!);
 		expect(fixedW).toBeCloseTo(110.5, 0);
 		expect(fixedX).toBeCloseTo(fixedW / 2, 0);
+	});
+	it("automatically aligns vertical position and preserves gap for a duplicated pill in a horizontal row", () => {
+		// Exact reproduction of the user's scenario from long_term_best_state_pillars_v5_pills.svg
+		const { svg } = doc(`
+<svg viewBox="0 0 880 370">
+  <g id="row1" transform="translate(36, 62)">
+    <rect width="808" height="58" rx="10"></rect>
+    <rect x="54" y="19" width="56" height="20" rx="5"></rect>
+    <text x="82" y="33.5">节律睡眠</text>
+    <g id="pill1" transform="translate(126, 15)">
+      <rect width="204.7" height="28" rx="6"></rect>
+      <text x="102.3" y="18.5">睡够7-9h与做梦期(睡懒觉也是赚)</text>
+    </g>
+    <g id="pill2" transform="translate(338.7, 15)">
+      <rect width="91.2" height="28" rx="6"></rect>
+      <text x="45.6" y="18.5">睡前温水降温</text>
+    </g>
+    <g id="pill3" transform="translate(437.9, 15)">
+      <rect width="103.4" height="28" rx="6"></rect>
+      <text x="51.7" y="18.5">全黑静音微环境</text>
+    </g>
+    <g id="pill4" transform="translate(549.3, 15)">
+      <rect width="103.4" height="28" rx="6"></rect>
+      <text x="51.7" y="18.5">床铺舒适消焦虑</text>
+    </g>
+    <g id="pillTest" transform="translate(663.8 21.73)">
+      <rect width="38.5" height="28" rx="6"></rect>
+      <text x="19.3" y="18.5">test</text>
+    </g>
+  </g>
+</svg>`);
+
+		const res = smartAutoLayout(svg);
+		expect(res.changed).toBe(true);
+
+		const pillTest = svg.querySelector("#pillTest")!;
+		const tr = pillTest.getAttribute("transform")!;
+		const m = tr.match(/translate\(\s*([-\d.]+)\s*[ ,]\s*([-\d.]+)\s*\)/);
+		expect(m).not.toBeNull();
+		const testX = parseFloat(m![1]);
+		const testY = parseFloat(m![2]);
+
+		// Y MUST be aligned to y=15 (same as pill1, pill2, pill3, pill4)!
+		expect(testY).toBeCloseTo(15, 1);
+
+		// X MUST maintain the exact 8.0px gap from pill4 (549.3 + 103.4 + 8.0 = 660.7)!
+		expect(testX).toBeCloseTo(660.7, 1);
+
+		// Other pills should remain at x=549.3, y=15
+		const tr4 = svg.querySelector("#pill4")!.getAttribute("transform")!;
+		const m4 = tr4.match(/translate\(\s*([-\d.]+)\s*[ ,]\s*([-\d.]+)\s*\)/)!;
+		expect(parseFloat(m4[1])).toBeCloseTo(549.3, 1);
+		expect(parseFloat(m4[2])).toBeCloseTo(15, 1);
+	});
+
+	it("refills and closes gap when a pill is deleted from the middle of a horizontal row", () => {
+		const { svg } = doc(`
+<svg viewBox="0 0 880 370">
+  <g id="row" transform="translate(36, 62)">
+    <g id="p1" transform="translate(100, 15)">
+      <rect width="100" height="28"></rect>
+      <text x="50" y="18">P1</text>
+    </g>
+    <g id="p3" transform="translate(250, 15)">
+      <rect width="100" height="28"></rect>
+      <text x="50" y="18">P3</text>
+    </g>
+  </g>
+</svg>`);
+		// Gap between p1 and p3 is 250 - (100 + 100) = 50px
+		const res = smartAutoLayout(svg);
+		expect(res.changed).toBe(true);
+
+		const tr3 = svg.querySelector("#p3")!.getAttribute("transform")!;
+		const m3 = tr3.match(/translate\(\s*([-\d.]+)\s*[ ,]\s*([-\d.]+)\s*\)/);
+		expect(m3).not.toBeNull();
+		// p3 should have shifted left to maintain standard 8px gap: 100 + 100 + 8 = 208
+		expect(parseFloat(m3![1])).toBeCloseTo(208, 1);
+		expect(parseFloat(m3![2])).toBeCloseTo(15, 1);
 	});
 });
 

@@ -1045,7 +1045,174 @@ function bestAxisSnap(self, peers, axis, pxPerMm, movingIsSmall) {
   }
   return best ? { delta: best.delta, guide: best.guide } : null;
 }
-function smartAutoLayout(svg) {
+function layoutHorizontalRows(svg) {
+  const hidden = (el) => el.getAttribute("display") === "none" || !!el.closest("[data-a1-align]");
+  const vbAttr = (svg.getAttribute("viewBox") || svg.getAttribute("viewbox") || "").trim().split(/[\s,]+/);
+  const svgW = vbAttr.length === 4 ? parseFloat(vbAttr[2]) : num(svg.getAttribute("width")) || 800;
+  const svgH = vbAttr.length === 4 ? parseFloat(vbAttr[3]) : num(svg.getAttribute("height")) || 600;
+  const isCanvas = (box) => {
+    const w = box.right - box.left;
+    const h = box.bottom - box.top;
+    return w >= svgW * 0.92 && h >= svgH * 0.92;
+  };
+  const cardGroups = Array.from(svg.querySelectorAll("g")).filter((g) => {
+    if (hidden(g))
+      return false;
+    return g.querySelector("text") !== null && g.querySelector("rect, circle, ellipse, path") !== null;
+  });
+  const atomicGroups = cardGroups.filter((g) => !cardGroups.some((other) => other !== g && g.contains(other)));
+  const candidates = [];
+  for (const g of atomicGroups) {
+    const box = measureBox(g, svg);
+    if (!box || isCanvas(box))
+      continue;
+    if (g.parentElement) {
+      candidates.push({ el: g, box, parent: g.parentElement });
+    }
+  }
+  for (const r of Array.from(svg.querySelectorAll("rect"))) {
+    if (hidden(r))
+      continue;
+    if (atomicGroups.some((g) => g.contains(r)))
+      continue;
+    const w = num(r.getAttribute("width")) ?? 0;
+    const h = num(r.getAttribute("height")) ?? 0;
+    if (w < 20 || h < 16)
+      continue;
+    const box = measureBox(r, svg);
+    if (!box || isCanvas(box))
+      continue;
+    if (r.parentElement) {
+      candidates.push({ el: r, box, parent: r.parentElement });
+    }
+  }
+  const parentMap = /* @__PURE__ */ new Map();
+  for (const cand of candidates) {
+    let list = parentMap.get(cand.parent);
+    if (!list) {
+      list = [];
+      parentMap.set(cand.parent, list);
+    }
+    list.push(cand);
+  }
+  let totalChanged = false;
+  let totalCount = 0;
+  const allGaps = [];
+  for (const [, list] of parentMap.entries()) {
+    if (list.length < 2)
+      continue;
+    const sorted = [...list].sort((a, b) => a.box.left - b.box.left);
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const g = sorted[i + 1].box.left - sorted[i].box.right;
+      if (g >= 4 && g <= 48)
+        allGaps.push(g);
+    }
+  }
+  const globalMedianGap = allGaps.length > 0 ? median(allGaps) : 8;
+  for (const [parent, list] of parentMap.entries()) {
+    const parentBox = measureBox(parent, svg);
+    const parentW = parentBox ? parentBox.right - parentBox.left : svgW;
+    const filtered = list.filter((it) => {
+      const w = it.box.right - it.box.left;
+      return w < parentW * 0.9;
+    });
+    if (filtered.length < 2)
+      continue;
+    const rows = [];
+    const sorted = [...filtered].sort((a, b) => a.box.left - b.box.left);
+    for (const item of sorted) {
+      const itemH = item.box.bottom - item.box.top;
+      let placed = false;
+      for (const row of rows) {
+        const peer = row[0];
+        const peerH = peer.box.bottom - peer.box.top;
+        const overlapY = Math.min(item.box.bottom, peer.box.bottom) - Math.max(item.box.top, peer.box.top);
+        const minH = Math.min(itemH, peerH);
+        if (overlapY >= minH * 0.4) {
+          row.push(item);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) {
+        rows.push([item]);
+      }
+    }
+    for (const row of rows) {
+      if (row.length < 2)
+        continue;
+      row.sort((a, b) => a.box.left - b.box.left);
+      const heights = row.map((it) => it.box.bottom - it.box.top);
+      const rowMedianH = median(heights);
+      const chips = row.filter((it) => {
+        const h = it.box.bottom - it.box.top;
+        return Math.abs(h - rowMedianH) <= Math.max(6, rowMedianH * 0.25);
+      });
+      if (chips.length < 2)
+        continue;
+      const tops = chips.map((it) => it.box.top);
+      let dominantTop = tops[0];
+      let maxClusterCount = 0;
+      for (const t of tops) {
+        const clusterCount = tops.filter((other) => Math.abs(other - t) <= 1.5).length;
+        if (clusterCount > maxClusterCount) {
+          maxClusterCount = clusterCount;
+          dominantTop = t;
+        }
+      }
+      const rowGaps = [];
+      for (let i = 0; i < chips.length - 1; i++) {
+        const g = chips[i + 1].box.left - chips[i].box.right;
+        if (g >= 2 && g <= 60)
+          rowGaps.push(g);
+      }
+      let targetGap = globalMedianGap;
+      if (rowGaps.length > 0) {
+        let bestGap = rowGaps[0];
+        let bestGapCount = 0;
+        for (const g of rowGaps) {
+          const count = rowGaps.filter((other) => Math.abs(other - g) <= 1.5).length;
+          if (count > bestGapCount) {
+            bestGapCount = count;
+            bestGap = g;
+          }
+        }
+        targetGap = bestGapCount >= 2 ? bestGap : median(rowGaps);
+      }
+      if (targetGap < 4 || targetGap > 32) {
+        targetGap = globalMedianGap >= 4 && globalMedianGap <= 32 ? globalMedianGap : 8;
+      }
+      let curLeft = chips[0].box.left;
+      for (let i = 0; i < chips.length; i++) {
+        const chip = chips[i];
+        const w = chip.box.right - chip.box.left;
+        const targetLeft = curLeft;
+        const targetTop = dominantTop;
+        const dx = targetLeft - chip.box.left;
+        const dy = targetTop - chip.box.top;
+        if (Math.abs(dx) > 0.4 || Math.abs(dy) > 0.4) {
+          nudge(chip.el, dx, dy);
+          totalChanged = true;
+          totalCount++;
+          chip.box.left += dx;
+          chip.box.right += dx;
+          chip.box.top += dy;
+          chip.box.bottom += dy;
+        }
+        curLeft = chip.box.right + targetGap;
+      }
+    }
+  }
+  return { changed: totalChanged, count: totalCount };
+}
+function median(values) {
+  if (values.length === 0)
+    return 0;
+  const s = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 !== 0 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+function layoutVerticalColumns(svg) {
   const vbAttr = (svg.getAttribute("viewBox") || svg.getAttribute("viewbox") || "").trim().split(/[\s,]+/);
   const svgW = vbAttr.length === 4 ? parseFloat(vbAttr[2]) : num(svg.getAttribute("width")) || 800;
   const svgH = vbAttr.length === 4 ? parseFloat(vbAttr[3]) : num(svg.getAttribute("height")) || 600;
@@ -1235,6 +1402,21 @@ function smartAutoLayout(svg) {
       }
       curY += itemH + gap;
     }
+  }
+  return { changed: totalChanged, count: totalCount };
+}
+function smartAutoLayout(svg) {
+  let totalChanged = false;
+  let totalCount = 0;
+  const rowRes = layoutHorizontalRows(svg);
+  if (rowRes.changed) {
+    totalChanged = true;
+    totalCount += rowRes.count;
+  }
+  const colRes = layoutVerticalColumns(svg);
+  if (colRes.changed) {
+    totalChanged = true;
+    totalCount += colRes.count;
   }
   return { changed: totalChanged, count: totalCount };
 }
@@ -1732,7 +1914,8 @@ var MARK = "data-a1-svg";
 var SVG_PATH_ATTR = "data-a1-svg-path";
 var DEFAULT_SETTINGS = {
   openEditorHotkey: "Ctrl+Shift+Alt+I",
-  deleteSvgHotkey: "Ctrl+Delete"
+  deleteSvgHotkey: "Ctrl+Delete",
+  smartLayoutHotkey: "Ctrl+Shift+S"
 };
 function isDiagramSvg(el) {
   if (!el)
@@ -1815,6 +1998,11 @@ function getLocaleStrings() {
       settingDeleteResetTooltip: "\u6062\u590D\u9ED8\u8BA4\u5220\u9664\u5FEB\u6377\u952E (Ctrl+Delete)",
       settingDeleteUpdatedNotice: (hk) => `\u5220\u9664 SVG \u5FEB\u6377\u952E\u5DF2\u66F4\u65B0\u4E3A: ${hk}`,
       settingDeleteResetNotice: "\u5DF2\u6062\u590D\u9ED8\u8BA4\u5220\u9664\u5FEB\u6377\u952E: Ctrl+Delete",
+      settingSmartLayoutHotkeyName: "\u667A\u80FD\u6392\u7248\u5FEB\u6377\u952E",
+      settingSmartLayoutHotkeyDesc: "\u5728 SVG \u7F16\u8F91\u5F39\u7A97\u4E2D\u6309\u4E0B\u6B64\u5FEB\u6377\u952E\u53EF\u89E6\u53D1\u667A\u80FD\u6392\u7248\uFF08\u81EA\u52A8\u5C45\u4E2D\u5E76\u5747\u5300\u5206\u5E03\u5361\u7247\u95F4\u9699\uFF09\u3002\u9ED8\u8BA4\uFF1ACtrl+Shift+S\u3002\u5728\u8F93\u5165\u6846\u4E2D\u53EF\u76F4\u63A5\u6309\u4E0B\u60F3\u8981\u5F55\u5236\u7684\u5FEB\u6377\u952E\u3002",
+      settingSmartLayoutResetTooltip: "\u6062\u590D\u9ED8\u8BA4\u667A\u80FD\u6392\u7248\u5FEB\u6377\u952E (Ctrl+Shift+S)",
+      settingSmartLayoutUpdatedNotice: (hk) => `\u667A\u80FD\u6392\u7248\u5FEB\u6377\u952E\u5DF2\u66F4\u65B0\u4E3A: ${hk}`,
+      settingSmartLayoutResetNotice: "\u5DF2\u6062\u590D\u9ED8\u8BA4\u667A\u80FD\u6392\u7248\u5FEB\u6377\u952E: Ctrl+Shift+S",
       noticeDeleted: (name) => `SVG \u5DF2\u5220\u9664\u5E76\u89E3\u7ED1\u4EFB\u52A1: ${name}`,
       noticeDeletedNoLink: (name) => `SVG \u5DF2\u5220\u9664: ${name}`
     };
@@ -1862,6 +2050,11 @@ function getLocaleStrings() {
     settingDeleteResetTooltip: "Reset to default delete hotkey (Ctrl+Delete)",
     settingDeleteUpdatedNotice: (hk) => `Delete SVG hotkey updated to: ${hk}`,
     settingDeleteResetNotice: "Reset to default delete hotkey: Ctrl+Delete",
+    settingSmartLayoutHotkeyName: "Smart Layout Hotkey",
+    settingSmartLayoutHotkeyDesc: "Press this hotkey while in the SVG editor to trigger smart layout (auto-center and balance cards & gaps). Default: Ctrl+Shift+S. Type directly in the input box to record your hotkey.",
+    settingSmartLayoutResetTooltip: "Reset to default smart layout hotkey (Ctrl+Shift+S)",
+    settingSmartLayoutUpdatedNotice: (hk) => `Smart layout hotkey updated to: ${hk}`,
+    settingSmartLayoutResetNotice: "Reset to default smart layout hotkey: Ctrl+Shift+S",
     noticeDeleted: (name) => `Deleted SVG and unlinked: ${name}`,
     noticeDeletedNoLink: (name) => `Deleted SVG: ${name}`
   };
@@ -2200,6 +2393,32 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     }
     return false;
   }
+  isSmartLayoutHotkey(evt) {
+    if (this.settings.smartLayoutHotkey && this.matchesHotkey(evt, this.settings.smartLayoutHotkey))
+      return true;
+    if (this.matchesHotkey(evt, "Ctrl+Shift+S") || this.matchesHotkey(evt, "Mod+Shift+S"))
+      return true;
+    const hkMgr = this.app.hotkeyManager;
+    if (hkMgr) {
+      const commandIds = [
+        `${this.manifest.id}:smart-layout-svg`,
+        "svg-quick-editor:smart-layout-svg",
+        "a1-svg-quick-editor:smart-layout-svg"
+      ];
+      for (const id of commandIds) {
+        const list = [
+          ...hkMgr.getHotkeys?.(id) || [],
+          ...hkMgr.customKeys?.[id] || [],
+          ...hkMgr.defaultKeys?.[id] || []
+        ];
+        for (const hk of list) {
+          if (this.matchesObsidianHotkey(evt, hk))
+            return true;
+        }
+      }
+    }
+    return false;
+  }
   onKeyDown(evt) {
     if (this.isSvgEditHotkey(evt)) {
       evt.preventDefault();
@@ -2220,6 +2439,16 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
         evt.stopPropagation();
         evt.stopImmediatePropagation();
         void this.executeEditSvgText();
+        return;
+      }
+    }
+    if (this.isSmartLayoutHotkey(evt) && !evt.repeat) {
+      const activeSvg = this.history.getActiveSvg() ?? this.currentModalSvg ?? document.querySelector(".a1-svg-modal-body svg, .svg-lightbox-content svg");
+      if (activeSvg) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        evt.stopImmediatePropagation();
+        this.smartLayout(activeSvg);
         return;
       }
     }
@@ -3146,9 +3375,10 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     helpIcon.title = isZh ? "\u64CD\u4F5C\u8BF4\u660E (\u60AC\u6D6E\u67E5\u770B)" : "Help & Shortcuts (Hover to view)";
     const helpPopover = document.createElement("div");
     helpPopover.className = "svg-help-popover";
+    const smartLayoutKey = this.settings.smartLayoutHotkey || "Ctrl+Shift+S";
     const shortcuts = isZh ? [
       { key: "Ctrl+S", desc: "\u5373\u65F6\u4FDD\u5B58 (\u4FDD\u7559\u64A4\u9500\u8BB0\u5F55)" },
-      { key: "\u667A\u80FD\u6392\u7248", desc: "\u81EA\u52A8\u5C45\u4E2D\u5E76\u5747\u5300\u5206\u5E03\u5361\u7247\u95F4\u9699" },
+      { key: smartLayoutKey, desc: "\u81EA\u52A8\u5C45\u4E2D\u5E76\u5747\u5300\u5206\u5E03\u5361\u7247\u95F4\u9699" },
       { key: "Ctrl+\u6EDA\u8F6E", desc: "\u7F29\u653EUI\u6846\u5927\u5C0F (\u589E\u5927/\u51CF\u5C0F)" },
       { key: "Delete", desc: "\u60AC\u6D6EUI\u6846\u6309\u952E\u76F4\u63A5\u5220\u9664" },
       { key: "\u6E05\u7A7A\u6587\u672C", desc: "\u6E05\u7A7A\u6587\u5B57\u81EA\u52A8\u5220\u9664UI\u6846" },
@@ -3158,7 +3388,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       { key: "\u53CC\u51FB / F2", desc: "\u5FEB\u901F\u7F16\u8F91\u6587\u5B57" }
     ] : [
       { key: "Ctrl+S", desc: "Save in-place (keeps history)" },
-      { key: "Smart Layout", desc: "Auto-center and balance cards & gaps" },
+      { key: smartLayoutKey, desc: "Auto-center and balance cards & gaps" },
       { key: "Ctrl+Scroll", desc: "Scale UI box size (enlarge/shrink)" },
       { key: "Delete", desc: "Hover and press Delete to remove box" },
       { key: "Clear Text", desc: "Auto-deletes box when text is empty" },
@@ -3321,6 +3551,15 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
         e.stopPropagation();
         if (modalSvg) {
           void this.saveCurrentSvg(modalSvg, true);
+        }
+        return;
+      }
+      if (!this.overlay && !isConfirming && this.isSmartLayoutHotkey(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        if (modalSvg) {
+          this.smartLayout(modalSvg);
         }
         return;
       }
@@ -3810,6 +4049,39 @@ var A1SvgQuickEditorSettingTab = class extends import_obsidian.PluginSettingTab 
         await this.plugin.saveSettings();
         this.display();
         new import_obsidian.Notice(i18n.settingDeleteResetNotice);
+      });
+    });
+    new import_obsidian.Setting(containerEl).setName(i18n.settingSmartLayoutHotkeyName).setDesc(i18n.settingSmartLayoutHotkeyDesc).addText((text) => {
+      text.setValue(this.plugin.settings.smartLayoutHotkey);
+      text.inputEl.addEventListener("keydown", (e) => {
+        if (["Control", "Shift", "Alt", "Meta"].includes(e.key))
+          return;
+        e.preventDefault();
+        e.stopPropagation();
+        const parts = [];
+        if (e.ctrlKey)
+          parts.push("Ctrl");
+        if (e.shiftKey)
+          parts.push("Shift");
+        if (e.altKey)
+          parts.push("Alt");
+        if (e.metaKey)
+          parts.push("Cmd");
+        parts.push(e.key.toUpperCase());
+        const combination = parts.join("+");
+        text.setValue(combination);
+        this.plugin.settings.smartLayoutHotkey = combination;
+        void (async () => {
+          await this.plugin.saveSettings();
+          new import_obsidian.Notice(i18n.settingSmartLayoutUpdatedNotice(combination));
+        })();
+      });
+    }).addExtraButton((btn) => {
+      btn.setIcon("reset").setTooltip(i18n.settingSmartLayoutResetTooltip).onClick(async () => {
+        this.plugin.settings.smartLayoutHotkey = DEFAULT_SETTINGS.smartLayoutHotkey;
+        await this.plugin.saveSettings();
+        this.display();
+        new import_obsidian.Notice(i18n.settingSmartLayoutResetNotice);
       });
     });
   }

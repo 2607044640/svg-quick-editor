@@ -12,11 +12,13 @@ const SVG_PATH_ATTR = "data-a1-svg-path";
 interface A1SvgQuickEditorSettings {
 	openEditorHotkey: string; // e.g. "Ctrl+Shift+Alt+I"
 	deleteSvgHotkey: string; // e.g. "Ctrl+Delete"
+	smartLayoutHotkey: string; // e.g. "Ctrl+Shift+S"
 }
 
 const DEFAULT_SETTINGS: A1SvgQuickEditorSettings = {
 	openEditorHotkey: "Ctrl+Shift+Alt+I",
 	deleteSvgHotkey: "Ctrl+Delete",
+	smartLayoutHotkey: "Ctrl+Shift+S",
 };
 
 export function isDiagramSvg(el: Element | null): el is SVGSVGElement {
@@ -108,6 +110,11 @@ export function getLocaleStrings() {
 			settingDeleteResetTooltip: "恢复默认删除快捷键 (Ctrl+Delete)",
 			settingDeleteUpdatedNotice: (hk: string) => `删除 SVG 快捷键已更新为: ${hk}`,
 			settingDeleteResetNotice: "已恢复默认删除快捷键: Ctrl+Delete",
+			settingSmartLayoutHotkeyName: "智能排版快捷键",
+			settingSmartLayoutHotkeyDesc: "在 SVG 编辑弹窗中按下此快捷键可触发智能排版（自动居中并均匀分布卡片间隙）。默认：Ctrl+Shift+S。在输入框中可直接按下想要录制的快捷键。",
+			settingSmartLayoutResetTooltip: "恢复默认智能排版快捷键 (Ctrl+Shift+S)",
+			settingSmartLayoutUpdatedNotice: (hk: string) => `智能排版快捷键已更新为: ${hk}`,
+			settingSmartLayoutResetNotice: "已恢复默认智能排版快捷键: Ctrl+Shift+S",
 			noticeDeleted: (name: string) => `SVG 已删除并解绑任务: ${name}`,
 			noticeDeletedNoLink: (name: string) => `SVG 已删除: ${name}`,
 		};
@@ -156,6 +163,11 @@ export function getLocaleStrings() {
 		settingDeleteResetTooltip: "Reset to default delete hotkey (Ctrl+Delete)",
 		settingDeleteUpdatedNotice: (hk: string) => `Delete SVG hotkey updated to: ${hk}`,
 		settingDeleteResetNotice: "Reset to default delete hotkey: Ctrl+Delete",
+		settingSmartLayoutHotkeyName: "Smart Layout Hotkey",
+		settingSmartLayoutHotkeyDesc: "Press this hotkey while in the SVG editor to trigger smart layout (auto-center and balance cards & gaps). Default: Ctrl+Shift+S. Type directly in the input box to record your hotkey.",
+		settingSmartLayoutResetTooltip: "Reset to default smart layout hotkey (Ctrl+Shift+S)",
+		settingSmartLayoutUpdatedNotice: (hk: string) => `Smart layout hotkey updated to: ${hk}`,
+		settingSmartLayoutResetNotice: "Reset to default smart layout hotkey: Ctrl+Shift+S",
 		noticeDeleted: (name: string) => `Deleted SVG and unlinked: ${name}`,
 		noticeDeletedNoLink: (name: string) => `Deleted SVG: ${name}`,
 	};
@@ -535,6 +547,37 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		return false;
 	}
 
+	public isSmartLayoutHotkey(evt: KeyboardEvent): boolean {
+		if (this.settings.smartLayoutHotkey && this.matchesHotkey(evt, this.settings.smartLayoutHotkey)) return true;
+		if (this.matchesHotkey(evt, "Ctrl+Shift+S") || this.matchesHotkey(evt, "Mod+Shift+S")) return true;
+
+		interface HotkeyEntry { modifiers?: string[]; key?: string }
+		interface HotkeyManagerLike {
+			getHotkeys?: (id: string) => HotkeyEntry[] | undefined;
+			customKeys?: Record<string, HotkeyEntry[] | undefined>;
+			defaultKeys?: Record<string, HotkeyEntry[] | undefined>;
+		}
+		const hkMgr = (this.app as unknown as { hotkeyManager?: HotkeyManagerLike }).hotkeyManager;
+		if (hkMgr) {
+			const commandIds = [
+				`${this.manifest.id}:smart-layout-svg`,
+				"svg-quick-editor:smart-layout-svg",
+				"a1-svg-quick-editor:smart-layout-svg"
+			];
+			for (const id of commandIds) {
+				const list: HotkeyEntry[] = [
+					...(hkMgr.getHotkeys?.(id) || []),
+					...(hkMgr.customKeys?.[id] || []),
+					...(hkMgr.defaultKeys?.[id] || [])
+				];
+				for (const hk of list) {
+					if (this.matchesObsidianHotkey(evt, hk)) return true;
+				}
+			}
+		}
+		return false;
+	}
+
 	private onKeyDown(evt: KeyboardEvent): void {
 		// 1. Hotkey check: Open SVG Image Editor or start text edit (default, custom setting, or Obsidian bound hotkey)
 		if (this.isSvgEditHotkey(evt)) {
@@ -564,7 +607,21 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			}
 		}
 
-		// 3. Save (Ctrl+S / Cmd+S): Directly overwrite local file, keeping Ctrl+Z/Y history
+		// 3. Smart Layout (default Ctrl+Shift+S / custom setting)
+		if (this.isSmartLayoutHotkey(evt) && !evt.repeat) {
+			const activeSvg = this.history.getActiveSvg() ??
+				this.currentModalSvg ??
+				(document.querySelector(".a1-svg-modal-body svg, .svg-lightbox-content svg") as SVGSVGElement | null);
+			if (activeSvg) {
+				evt.preventDefault();
+				evt.stopPropagation();
+				evt.stopImmediatePropagation();
+				this.smartLayout(activeSvg);
+				return;
+			}
+		}
+
+		// 4. Save (Ctrl+S / Cmd+S): Directly overwrite local file, keeping Ctrl+Z/Y history
 		if ((evt.ctrlKey || evt.metaKey) && !evt.altKey && !evt.shiftKey && (evt.key === "s" || evt.key === "S")) {
 			const activeSvg = this.history.getActiveSvg() ??
 				this.currentModalSvg ??
@@ -1598,9 +1655,10 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		const helpPopover = document.createElement("div");
 		helpPopover.className = "svg-help-popover";
 
+		const smartLayoutKey = this.settings.smartLayoutHotkey || "Ctrl+Shift+S";
 		const shortcuts = isZh ? [
 			{ key: "Ctrl+S", desc: "即时保存 (保留撤销记录)" },
-			{ key: "智能排版", desc: "自动居中并均匀分布卡片间隙" },
+			{ key: smartLayoutKey, desc: "自动居中并均匀分布卡片间隙" },
 			{ key: "Ctrl+滚轮", desc: "缩放UI框大小 (增大/减小)" },
 			{ key: "Delete", desc: "悬浮UI框按键直接删除" },
 			{ key: "清空文本", desc: "清空文字自动删除UI框" },
@@ -1610,7 +1668,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			{ key: "双击 / F2", desc: "快速编辑文字" },
 		] : [
 			{ key: "Ctrl+S", desc: "Save in-place (keeps history)" },
-			{ key: "Smart Layout", desc: "Auto-center and balance cards & gaps" },
+			{ key: smartLayoutKey, desc: "Auto-center and balance cards & gaps" },
 			{ key: "Ctrl+Scroll", desc: "Scale UI box size (enlarge/shrink)" },
 			{ key: "Delete", desc: "Hover and press Delete to remove box" },
 			{ key: "Clear Text", desc: "Auto-deletes box when text is empty" },
@@ -1790,6 +1848,15 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 				e.stopPropagation();
 				if (modalSvg) {
 					void this.saveCurrentSvg(modalSvg, true);
+				}
+				return;
+			}
+			if (!this.overlay && !isConfirming && this.isSmartLayoutHotkey(e)) {
+				e.preventDefault();
+				e.stopPropagation();
+				e.stopImmediatePropagation();
+				if (modalSvg) {
+					this.smartLayout(modalSvg);
 				}
 				return;
 			}
@@ -2348,6 +2415,41 @@ class A1SvgQuickEditorSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 						this.display();
 						new Notice(i18n.settingDeleteResetNotice);
+					});
+			});
+
+		new Setting(containerEl)
+			.setName(i18n.settingSmartLayoutHotkeyName)
+			.setDesc(i18n.settingSmartLayoutHotkeyDesc)
+			.addText((text) => {
+				text.setValue(this.plugin.settings.smartLayoutHotkey);
+				text.inputEl.addEventListener("keydown", (e) => {
+					if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
+					e.preventDefault();
+					e.stopPropagation();
+					const parts: string[] = [];
+					if (e.ctrlKey) parts.push("Ctrl");
+					if (e.shiftKey) parts.push("Shift");
+					if (e.altKey) parts.push("Alt");
+					if (e.metaKey) parts.push("Cmd");
+					parts.push(e.key.toUpperCase());
+					const combination = parts.join("+");
+					text.setValue(combination);
+					this.plugin.settings.smartLayoutHotkey = combination;
+					void (async () => {
+						await this.plugin.saveSettings();
+						new Notice(i18n.settingSmartLayoutUpdatedNotice(combination));
+					})();
+				});
+			})
+			.addExtraButton((btn) => {
+				btn.setIcon("reset")
+					.setTooltip(i18n.settingSmartLayoutResetTooltip)
+					.onClick(async () => {
+						this.plugin.settings.smartLayoutHotkey = DEFAULT_SETTINGS.smartLayoutHotkey;
+						await this.plugin.saveSettings();
+						this.display();
+						new Notice(i18n.settingSmartLayoutResetNotice);
 					});
 			});
 	}
