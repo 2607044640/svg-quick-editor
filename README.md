@@ -9,6 +9,8 @@ Supports inline SVGs in notes, embedded `.svg` files, and lightbox views.
 - **In-Place Text Editing**: Hover over any text in an SVG and press **F2** (or your custom hotkey) to edit text in place. Press **Enter** or click outside to commit changes.
 - **Ctrl + Scroll UI Box Scaling**: Hold **Ctrl** and scroll the mouse wheel over any hovered card or UI element to smoothly scale it in place around its center.
 - **Delete Key Direct Removal**: Hover over any UI box or card and press **Delete** to directly remove it without entering text edit mode.
+- **Smart Layout**: Automatically aligns horizontal card/chip rows to common baseline Y coordinates and uniform gap spacing, as well as vertically balancing card columns. Trigger via toolbar button or customizable shortcut (**Ctrl + Shift + S**).
+- **In-Modal Delete SVG**: Delete an entire SVG diagram directly from within the editor modal with a confirmation dialog (**Delete SVG** button or customizable shortcut).
 - **Smart Element Removal**: Clearing the text and committing will automatically remove the corresponding text chip and its background element.
 - **In-Place Ctrl+S Save**: Press **Ctrl + S** (or **Cmd + S**) to overwrite and save changes directly to disk while keeping full Undo / Redo history.
 - **Disk Change Auto-Reload**: Automatically detects disk file modifications (e.g. from external AI tools) and hot-reloads SVGs upon returning to Obsidian or opening the modal.
@@ -29,8 +31,9 @@ Supports inline SVGs in notes, embedded `.svg` files, and lightbox views.
 6. Hover over any box and press **Delete** to instantly remove it.
 7. To move an element, hold **Shift** and drag it with the left mouse button.
 8. To duplicate an element, hold **Alt** and drag it.
-9. Toggle **Auto Align** in the modal toolbar to enable or disable magnetic snap guides.
-10. Use **Ctrl + Z** to undo modifications, or **Ctrl + Y** to redo.
+9. Press **Ctrl + Shift + S** (or click the Smart Layout icon) to auto-align horizontal chips and balance columns.
+10. Toggle **Auto Align** in the modal toolbar to enable or disable magnetic snap guides.
+11. Use **Ctrl + Z** to undo modifications, or **Ctrl + Y** to redo.
 
 ## Command
 
