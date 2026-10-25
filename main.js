@@ -587,10 +587,10 @@ function serializeSvg(el) {
   const attrs = [];
   for (let i = 0; i < el.attributes.length; i++) {
     const a = el.attributes[i];
-    if (a.name === "data-a1-svg-path" || a.name === "data-a1-pad")
+    if (a.name === "data-a1-svg-path" || a.name === "data-a1-pad" || a.name === "data-a1-svg")
       continue;
     if (a.name === "class") {
-      const cleaned = a.value.split(/\s+/).filter((c) => c && c !== "a1-svg-hover-text").join(" ");
+      const cleaned = a.value.split(/\s+/).filter((c) => c && c !== "a1-svg-hover-text" && c !== "a1-svg-hover-image").join(" ");
       if (!cleaned)
         continue;
       attrs.push(`class="${escapeAttr(cleaned)}"`);
@@ -965,14 +965,14 @@ function snapDelta(moving, svg, opts = {}) {
   const self = measureBox(moving, svg);
   if (!self)
     return { dx: 0, dy: 0, guides: [] };
-  const movingIsSmall = isSmallBox(self, moving, svg);
+  const movingIsSmall = isSmallBox(self, moving);
   const targetEls = collectAlignTargets(svg, moving);
   const peers = [];
   for (const t of targetEls) {
     const box = measureBox(t, svg);
     if (!box)
       continue;
-    peers.push({ el: t, box, isSmall: isSmallBox(box, t, svg) });
+    peers.push({ el: t, box, isSmall: isSmallBox(box, t) });
   }
   const xSnap = bestAxisSnap(self, peers, "x", pxPerMm, movingIsSmall);
   const ySnap = bestAxisSnap(self, peers, "y", pxPerMm, movingIsSmall);
@@ -1454,6 +1454,7 @@ function openTextOverlay(parent, opts) {
   }
   let closed = false;
   let composing = false;
+  let blurTimer = null;
   const suppressAlt = (e) => {
     if (e.key === "Alt") {
       e.preventDefault();
@@ -1464,6 +1465,10 @@ function openTextOverlay(parent, opts) {
     if (closed)
       return;
     closed = true;
+    if (blurTimer != null) {
+      window.clearTimeout(blurTimer);
+      blurTimer = null;
+    }
     window.removeEventListener("keyup", suppressAlt, { capture: true });
     input.remove();
     const focusTarget = parent.closest(".a1-svg-modal-dialog, .svg-lightbox-modal") ?? document.querySelector(".a1-svg-modal-dialog, .svg-lightbox-modal");
@@ -1504,6 +1509,7 @@ function openTextOverlay(parent, opts) {
     if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === "s" || e.key === "S")) {
       e.preventDefault();
       e.stopPropagation();
+      e.stopImmediatePropagation();
       commit();
       if (opts.onSave) {
         opts.onSave();
@@ -1513,10 +1519,12 @@ function openTextOverlay(parent, opts) {
     if (e.key === "Enter") {
       e.preventDefault();
       e.stopPropagation();
+      e.stopImmediatePropagation();
       commit();
     } else if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
+      e.stopImmediatePropagation();
       cancel();
     }
   });
@@ -1531,7 +1539,8 @@ function openTextOverlay(parent, opts) {
       input.focus();
       return;
     }
-    window.setTimeout(() => {
+    blurTimer = window.setTimeout(() => {
+      blurTimer = null;
       if (!closed)
         commit();
     }, 60);
@@ -1539,7 +1548,7 @@ function openTextOverlay(parent, opts) {
   parent.appendChild(input);
   input.focus();
   input.select();
-  return { input, close };
+  return { input, close, commit, cancel };
 }
 
 // src/svgTheme.ts
@@ -1763,7 +1772,10 @@ function ensureMarker(svgMarkup, marker) {
 
 // src/svgHistory.ts
 function cleanSvgHtml(html) {
-  return html.replace(/\s*class="[^"]*a1-svg-hover-[^"]*"/g, "").replace(/\s*a1-svg-hover-text/g, "").replace(/\s*a1-svg-hover-image/g, "").replace(/\s+data-a1-[a-z0-9_-]+(?:="[^"]*")?/g, "").replace(/<g\b[^>]*\bdata-a1-align="1"[^>]*>[\s\S]*?<\/g>/g, "").trim();
+  return html.replace(/\s+class="([^"]*)"/g, (_match, clsVal) => {
+    const cleaned = clsVal.split(/\s+/).filter((c) => c && c !== "a1-svg-hover-text" && c !== "a1-svg-hover-image").join(" ");
+    return cleaned ? ` class="${cleaned}"` : "";
+  }).replace(/\s+data-a1-[a-z0-9_-]+(?:="[^"]*")?/g, "").replace(/<g\b[^>]*\bdata-a1-align="1"[^>]*>[\s\S]*?<\/g>/g, "").trim();
 }
 function replaceSvgChildrenFromMarkup(target, markup) {
   const doc = target.ownerDocument || (typeof document !== "undefined" ? document : null);
@@ -1772,6 +1784,9 @@ function replaceSvgChildrenFromMarkup(target, markup) {
     try {
       const parsedDoc = new parserConstructor().parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${markup}</svg>`, "image/svg+xml");
       const root = parsedDoc.documentElement;
+      if (!root || root.tagName.toLowerCase() === "parsererror" || root.querySelector("parsererror")) {
+        return;
+      }
       while (target.firstChild) {
         target.removeChild(target.firstChild);
       }
@@ -1786,7 +1801,8 @@ function replaceSvgChildrenFromMarkup(target, markup) {
 }
 var SvgHistoryManager = class {
   constructor() {
-    this.initialContent = /* @__PURE__ */ new WeakMap();
+    this.savedContent = /* @__PURE__ */ new WeakMap();
+    this.dirtyFlags = /* @__PURE__ */ new WeakMap();
     this.undoStacks = /* @__PURE__ */ new WeakMap();
     this.redoStacks = /* @__PURE__ */ new WeakMap();
     this.maxStackSize = 50;
@@ -1794,8 +1810,9 @@ var SvgHistoryManager = class {
   }
   setActiveSvg(svg) {
     this.activeSvg = svg;
-    if (svg && !this.initialContent.has(svg)) {
-      this.initialContent.set(svg, cleanSvgHtml(svg.innerHTML));
+    if (svg && !this.savedContent.has(svg)) {
+      this.savedContent.set(svg, cleanSvgHtml(svg.innerHTML));
+      this.dirtyFlags.set(svg, false);
       this.undoStacks.set(svg, []);
       this.redoStacks.set(svg, []);
     }
@@ -1819,15 +1836,57 @@ var SvgHistoryManager = class {
   recordSnapshot(svg) {
     this.setActiveSvg(svg);
     const currentHtml = cleanSvgHtml(svg.innerHTML);
+    this.recordExplicitSnapshot(svg, currentHtml);
+  }
+  /**
+   * Records a pre-captured snapshot string before a multi-step or live-preview mutation.
+   */
+  recordExplicitSnapshot(svg, snapshotHtml) {
+    this.setActiveSvg(svg);
+    const cleaned = cleanSvgHtml(snapshotHtml);
     const stack = this.undoStacks.get(svg) || [];
-    if (stack.length === 0 || stack[stack.length - 1] !== currentHtml) {
-      stack.push(currentHtml);
+    if (stack.length === 0 || stack[stack.length - 1] !== cleaned) {
+      stack.push(cleaned);
       if (stack.length > this.maxStackSize) {
         stack.shift();
       }
       this.undoStacks.set(svg, stack);
     }
     this.redoStacks.set(svg, []);
+    this.dirtyFlags.set(svg, true);
+  }
+  /**
+   * Pops the latest snapshot if a tentative operation resulted in no actual DOM change.
+   */
+  popSnapshot(svg) {
+    const target = svg ?? this.getActiveSvg();
+    if (!target)
+      return;
+    const stack = this.undoStacks.get(target);
+    if (stack && stack.length > 0) {
+      stack.pop();
+      this.undoStacks.set(target, stack);
+    }
+    this.syncDirtyFlag(target);
+  }
+  /**
+   * Re-evaluates and updates the dirty flag for the given SVG against its saved baseline.
+   */
+  markDirty(svg) {
+    const target = svg ?? this.getActiveSvg();
+    if (!target)
+      return;
+    this.setActiveSvg(target);
+    this.syncDirtyFlag(target);
+  }
+  syncDirtyFlag(target) {
+    const saved = this.savedContent.get(target);
+    if (saved == null) {
+      this.dirtyFlags.set(target, false);
+      return;
+    }
+    const isDifferent = cleanSvgHtml(target.innerHTML) !== saved;
+    this.dirtyFlags.set(target, isDifferent);
   }
   undo(svg) {
     const target = svg ?? this.getActiveSvg();
@@ -1842,6 +1901,7 @@ var SvgHistoryManager = class {
     redoStack.push(currentHtml);
     this.redoStacks.set(target, redoStack);
     replaceSvgChildrenFromMarkup(target, prevHtml);
+    this.syncDirtyFlag(target);
     return true;
   }
   redo(svg) {
@@ -1857,42 +1917,48 @@ var SvgHistoryManager = class {
     undoStack.push(currentHtml);
     this.undoStacks.set(target, undoStack);
     replaceSvgChildrenFromMarkup(target, nextHtml);
+    this.syncDirtyFlag(target);
     return true;
   }
   isDirty(svg) {
     const target = svg ?? this.getActiveSvg();
     if (!target)
       return false;
-    const undoStack = this.undoStacks.get(target);
-    if (!undoStack || undoStack.length === 0) {
+    if (!this.dirtyFlags.get(target)) {
       return false;
     }
-    const initial = this.initialContent.get(target);
-    if (initial == null)
+    const saved = this.savedContent.get(target);
+    if (saved == null)
       return false;
-    return cleanSvgHtml(target.innerHTML) !== cleanSvgHtml(initial);
+    const isDifferent = cleanSvgHtml(target.innerHTML) !== saved;
+    if (!isDifferent) {
+      this.dirtyFlags.set(target, false);
+    }
+    return isDifferent;
   }
   getInitialContent(svg) {
     const target = svg ?? this.getActiveSvg();
     if (!target)
       return null;
-    return this.initialContent.get(target) ?? null;
+    return this.savedContent.get(target) ?? null;
   }
   discard(svg) {
     const target = svg ?? this.getActiveSvg();
     if (!target)
       return;
-    const initial = this.initialContent.get(target);
-    if (initial != null) {
-      replaceSvgChildrenFromMarkup(target, initial);
+    const saved = this.savedContent.get(target);
+    if (saved != null) {
+      replaceSvgChildrenFromMarkup(target, saved);
     }
+    this.dirtyFlags.set(target, false);
     this.clear(target);
   }
   markSaved(svg, keepHistory = false) {
     const target = svg ?? this.getActiveSvg();
     if (!target)
       return;
-    this.initialContent.set(target, cleanSvgHtml(target.innerHTML));
+    this.savedContent.set(target, cleanSvgHtml(target.innerHTML));
+    this.dirtyFlags.set(target, false);
     if (!keepHistory) {
       this.clear(target);
     }
@@ -1902,6 +1968,7 @@ var SvgHistoryManager = class {
     if (target) {
       this.undoStacks.set(target, []);
       this.redoStacks.set(target, []);
+      this.dirtyFlags.set(target, false);
     }
     if (this.activeSvg === target) {
       this.activeSvg = null;
@@ -1909,42 +1976,8 @@ var SvgHistoryManager = class {
   }
 };
 
-// src/main.ts
-var MARK = "data-a1-svg";
-var SVG_PATH_ATTR = "data-a1-svg-path";
-var DEFAULT_SETTINGS = {
-  openEditorHotkey: "Ctrl+Shift+Alt+I",
-  deleteSvgHotkey: "Ctrl+Delete",
-  smartLayoutHotkey: "Ctrl+Shift+S"
-};
-function isDiagramSvg(el) {
-  if (!el)
-    return false;
-  const hasInstanceOf = "instanceOf" in el && typeof el.instanceOf === "function";
-  const isSvg = (hasInstanceOf ? el.instanceOf(SVGSVGElement) : false) || (el.localName || el.tagName.toLowerCase()).endsWith("svg");
-  if (!isSvg)
-    return false;
-  if (el.closest("button, .oit-floating-zoom-btn, .clickable-icon, .svg-lightbox-header, .a1-svg-modal-header, .nav-action-button, [class*='overlay'], [class*='toolbar'], .workspace-tab-header, .view-header")) {
-    return false;
-  }
-  const cls = (el.getAttribute("class") || "").toLowerCase();
-  if (cls.includes("svg-icon") || cls.includes("lucide") || cls.includes("oit-") || cls.includes("zoom") || cls.includes("icon")) {
-    return false;
-  }
-  const w = parseFloat(el.getAttribute("width") || "0");
-  const h = parseFloat(el.getAttribute("height") || "0");
-  const vb = (el.getAttribute("viewBox") || el.getAttribute("viewbox") || "").trim().split(/[\s,]+/);
-  const vbw = vb.length === 4 ? parseFloat(vb[2]) : 0;
-  const vbh = vb.length === 4 ? parseFloat(vb[3]) : 0;
-  if ((w > 0 && w <= 64 && h > 0 && h <= 64 || vbw > 0 && vbw <= 64 && vbh > 0 && vbh <= 64) && el.querySelectorAll("text").length === 0) {
-    return false;
-  }
-  if (el.querySelectorAll("text").length === 0 && (w <= 64 || vbw <= 64)) {
-    return false;
-  }
-  return true;
-}
-function getLocaleStrings() {
+// src/i18n.ts
+function isChineseLocale() {
   let lang = "en";
   try {
     if (typeof window !== "undefined" && window.localStorage) {
@@ -1953,8 +1986,10 @@ function getLocaleStrings() {
   } catch {
     lang = "en";
   }
-  const isZh = lang.startsWith("zh");
-  if (isZh) {
+  return lang.startsWith("zh");
+}
+function getLocaleStrings() {
+  if (isChineseLocale()) {
     return {
       modalTitleDefault: "SVG \u56FE\u50CF\u7F16\u8F91\u5668",
       modalTitleNamed: (name) => `SVG \u56FE\u50CF\u7F16\u8F91\u5668 \u2014 ${name}`,
@@ -1973,6 +2008,7 @@ function getLocaleStrings() {
       badgeAutoSave: "\u9000\u51FA\u786E\u8BA4\u4FDD\u5B58",
       closeTooltip: "\u5173\u95ED (Esc)",
       noticeSaved: (name) => `SVG \u5DF2\u4FDD\u5B58: ${name}`,
+      noticeSaveFailed: "\u4FDD\u5B58 SVG \u5931\u8D25\uFF1A\u672A\u627E\u5230\u5BF9\u5E94\u7684\u6E90\u6587\u4EF6\u6216\u7B14\u8BB0",
       noticeSvgUpdated: (name) => `SVG \u5DF2\u81EA\u52A8\u68C0\u6D4B\u5230\u78C1\u76D8\u4FEE\u6539\u5E76\u91CD\u65B0\u52A0\u8F7D: ${name}`,
       noticeUndo: "\u5DF2\u64A4\u9500",
       noticeRedo: "\u5DF2\u91CD\u505A",
@@ -2025,6 +2061,7 @@ function getLocaleStrings() {
     badgeAutoSave: "Save on Exit",
     closeTooltip: "Close (Esc)",
     noticeSaved: (name) => `SVG saved: ${name}`,
+    noticeSaveFailed: "Failed to save SVG: target file or note not found",
     noticeSvgUpdated: (name) => `SVG reloaded from disk: ${name}`,
     noticeUndo: "Undone",
     noticeRedo: "Redone",
@@ -2059,6 +2096,320 @@ function getLocaleStrings() {
     noticeDeletedNoLink: (name) => `Deleted SVG: ${name}`
   };
 }
+
+// src/svgVaultUtils.ts
+var MARK = "data-a1-svg";
+var SVG_PATH_ATTR = "data-a1-svg-path";
+function isTFile(file) {
+  return !!file && typeof file === "object" && "path" in file && "extension" in file && typeof file.extension === "string";
+}
+function isDiagramSvg(el) {
+  if (!el)
+    return false;
+  const hasInstanceOf = "instanceOf" in el && typeof el.instanceOf === "function";
+  const isSvg = (hasInstanceOf ? el.instanceOf(SVGSVGElement) : false) || (el.localName || el.tagName.toLowerCase()).endsWith("svg");
+  if (!isSvg)
+    return false;
+  if (el.closest("button, .oit-floating-zoom-btn, .clickable-icon, .svg-lightbox-header, .a1-svg-modal-header, .nav-action-button, [class*='overlay'], [class*='toolbar'], .workspace-tab-header, .view-header")) {
+    return false;
+  }
+  const cls = (el.getAttribute("class") || "").toLowerCase();
+  if (cls.includes("svg-icon") || cls.includes("lucide") || cls.includes("oit-") || cls.includes("zoom") || cls.includes("icon")) {
+    return false;
+  }
+  const w = parseFloat(el.getAttribute("width") || "0");
+  const h = parseFloat(el.getAttribute("height") || "0");
+  const vb = (el.getAttribute("viewBox") || el.getAttribute("viewbox") || "").trim().split(/[\s,]+/);
+  const vbw = vb.length === 4 ? parseFloat(vb[2]) : 0;
+  const vbh = vb.length === 4 ? parseFloat(vb[3]) : 0;
+  if ((w > 0 && w <= 64 && h > 0 && h <= 64 || vbw > 0 && vbw <= 64 && vbh > 0 && vbh <= 64) && el.querySelectorAll("text").length === 0) {
+    return false;
+  }
+  if (el.querySelectorAll("text").length === 0 && (w <= 64 || vbw <= 64)) {
+    return false;
+  }
+  return true;
+}
+function prepareSvgMarkup(rawSvgContent, relPath) {
+  let processed = rawSvgContent.trim();
+  processed = processed.replace(/(<svg\b[^>]*?)\s+data-a1-svg-path="[^"]*"/gi, "$1");
+  const svgTagMatch = processed.match(/<svg\b[^>]*>/i);
+  if (svgTagMatch && !/\bviewBox\s*=/i.test(svgTagMatch[0])) {
+    const widthMatch = svgTagMatch[0].match(/\bwidth=["']?(\d+(?:\.\d+)?)(?:px)?["']?/i);
+    const heightMatch = svgTagMatch[0].match(/\bheight=["']?(\d+(?:\.\d+)?)(?:px)?["']?/i);
+    if (widthMatch && heightMatch) {
+      processed = processed.replace(/<svg\b/i, `<svg viewBox="0 0 ${widthMatch[1]} ${heightMatch[1]}"`);
+    }
+  }
+  if (relPath) {
+    const safePath = relPath.replace(/"/g, "&quot;");
+    processed = processed.replace(/<svg\b/i, `<svg ${SVG_PATH_ATTR}="${safePath}"`);
+  }
+  return processed;
+}
+function sanitizeSvgLinkPath(raw) {
+  if (!raw)
+    return "";
+  return raw.replace(/\\/g, "/").replace(/^\[\[/, "").replace(/\]\]$/, "").split("|")[0].trim().replace(/^\/+/, "");
+}
+function resolveVaultSvgFile(app, rawPathOrLink, sourcePath = "") {
+  const clean = sanitizeSvgLinkPath(rawPathOrLink);
+  if (!clean)
+    return null;
+  const direct = app.vault.getAbstractFileByPath(clean);
+  if (isTFile(direct))
+    return direct;
+  if (sourcePath) {
+    const linked = app.metadataCache.getFirstLinkpathDest(clean, sourcePath);
+    if (isTFile(linked))
+      return linked;
+  }
+  const globalLinked = app.metadataCache.getFirstLinkpathDest(clean, "");
+  if (isTFile(globalLinked))
+    return globalLinked;
+  const cleanLower = clean.toLowerCase();
+  const filenameLower = (cleanLower.split("/").pop() || "").toLowerCase();
+  const allFiles = app.vault.getFiles();
+  const exactMatch = allFiles.find((f) => f.path.replace(/\\/g, "/").toLowerCase() === cleanLower);
+  if (exactMatch)
+    return exactMatch;
+  const suffixMatch = allFiles.find((f) => f.path.replace(/\\/g, "/").toLowerCase().endsWith("/" + cleanLower));
+  if (suffixMatch)
+    return suffixMatch;
+  if (filenameLower) {
+    const nameMatch = allFiles.find((f) => f.extension === "svg" && f.name.toLowerCase() === filenameLower);
+    if (nameMatch)
+      return nameMatch;
+  }
+  return null;
+}
+async function readVaultSvgFile(app, fileOrPath, sourcePath = "") {
+  if (typeof fileOrPath !== "string" && isTFile(fileOrPath)) {
+    try {
+      if (await app.vault.adapter.exists(fileOrPath.path)) {
+        return { content: await app.vault.adapter.read(fileOrPath.path), path: fileOrPath.path, file: fileOrPath };
+      }
+      return { content: await app.vault.read(fileOrPath), path: fileOrPath.path, file: fileOrPath };
+    } catch {
+      return { content: "", path: fileOrPath.path, file: fileOrPath };
+    }
+  }
+  const clean = sanitizeSvgLinkPath(typeof fileOrPath === "string" ? fileOrPath : "");
+  const resolved = resolveVaultSvgFile(app, clean, sourcePath);
+  if (resolved) {
+    try {
+      if (await app.vault.adapter.exists(resolved.path)) {
+        return { content: await app.vault.adapter.read(resolved.path), path: resolved.path, file: resolved };
+      }
+      return { content: await app.vault.read(resolved), path: resolved.path, file: resolved };
+    } catch {
+    }
+  }
+  if (clean) {
+    try {
+      if (await app.vault.adapter.exists(clean)) {
+        return { content: await app.vault.adapter.read(clean), path: clean, file: null };
+      }
+    } catch {
+    }
+  }
+  return { content: "", path: clean, file: null };
+}
+async function writeVaultSvgFile(app, rawPath, content, sourcePath = "") {
+  const clean = sanitizeSvgLinkPath(rawPath);
+  if (!clean)
+    return { ok: false, resolvedPath: "" };
+  const file = resolveVaultSvgFile(app, clean, sourcePath);
+  const targetPath = file ? file.path : clean;
+  if (isTFile(file)) {
+    try {
+      await app.vault.modify(file, content);
+      return { ok: true, resolvedPath: file.path };
+    } catch (err) {
+      console.warn("vault.modify failed, falling back to adapter.write:", err);
+    }
+  }
+  try {
+    await app.vault.adapter.write(targetPath, content);
+    return { ok: true, resolvedPath: targetPath };
+  } catch (err) {
+    console.error("Failed to write SVG file via adapter:", err);
+    return { ok: false, resolvedPath: targetPath };
+  }
+}
+function isFluentTasksInstalled(app) {
+  const plugins = app.plugins;
+  if (!plugins)
+    return false;
+  return !!(plugins.plugins?.["fluent-tasks"] || plugins.enabledPlugins?.has?.("fluent-tasks"));
+}
+function isTodoDataSvg(targetPath) {
+  if (!targetPath)
+    return false;
+  const clean = targetPath.replace(/\\/g, "/").toLowerCase();
+  return clean.startsWith("tododata/") || clean.includes("/tododata/") || clean === "tododata";
+}
+async function getLinkedTasksInfo(app, targetPath) {
+  if (!targetPath)
+    return { count: 0, titles: [] };
+  const cleanTarget = sanitizeSvgLinkPath(targetPath);
+  const filename = cleanTarget.split("/").pop() || "";
+  if (!filename)
+    return { count: 0, titles: [] };
+  const titles = [];
+  try {
+    const files = app.vault.getFiles();
+    const todoFiles = files.filter((f) => f.extension === "md" && (f.path.startsWith("TodoData/") || f.path.includes("TodoData")));
+    for (const file of todoFiles) {
+      const content = await app.vault.read(file);
+      if (!content.includes("%%{") || !content.includes("svgs"))
+        continue;
+      const lines = content.split("\n");
+      for (const line of lines) {
+        const match = line.match(/%%(\{.*?\})%%/);
+        if (!match)
+          continue;
+        try {
+          const meta = JSON.parse(match[1]);
+          if (Array.isArray(meta.svgs) && meta.svgs.length > 0) {
+            const isLinked = meta.svgs.some((s) => {
+              if (typeof s !== "string")
+                return false;
+              const clean = sanitizeSvgLinkPath(s);
+              return clean === cleanTarget || clean.endsWith("/" + filename) || cleanTarget.endsWith("/" + clean) || clean.split("/").pop() === filename;
+            });
+            if (isLinked) {
+              const rawTitle = line.replace(/^- \[([ x])\]\s*/, "").replace(/\s*%%\{.*?\}%%/, "").trim();
+              titles.push(rawTitle || "Untitled task");
+            }
+          }
+        } catch {
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Failed to detect linked tasks:", err);
+  }
+  return { count: titles.length, titles };
+}
+async function cleanupFluentTasksSvgLinks(app, targetPath) {
+  if (!targetPath)
+    return;
+  const cleanTarget = sanitizeSvgLinkPath(targetPath);
+  const filename = cleanTarget.split("/").pop() || "";
+  if (!filename)
+    return;
+  try {
+    const files = app.vault.getFiles();
+    const todoFiles = files.filter((f) => f.extension === "md" && (f.path.startsWith("TodoData/") || f.path.includes("TodoData")));
+    for (const file of todoFiles) {
+      const content = await app.vault.read(file);
+      if (!content.includes("%%{") || !content.includes("svgs"))
+        continue;
+      let modified = false;
+      const newLines = content.split("\n").map((line) => {
+        const match = line.match(/%%(\{.*?\})%%/);
+        if (!match)
+          return line;
+        try {
+          const meta = JSON.parse(match[1]);
+          if (Array.isArray(meta.svgs) && meta.svgs.length > 0) {
+            const originalLen = meta.svgs.length;
+            const remaining = meta.svgs.filter((s) => {
+              if (typeof s !== "string")
+                return false;
+              const clean = sanitizeSvgLinkPath(s);
+              if (clean === cleanTarget)
+                return false;
+              if (clean.endsWith("/" + filename) || cleanTarget.endsWith("/" + clean))
+                return false;
+              if (clean.split("/").pop() === filename)
+                return false;
+              return true;
+            });
+            if (remaining.length !== originalLen) {
+              modified = true;
+              if (remaining.length > 0) {
+                meta.svgs = remaining;
+              } else {
+                delete meta.svgs;
+              }
+              return line.replace(/%%\{.*?\}%%/, `%%${JSON.stringify(meta)}%%`);
+            }
+          }
+        } catch {
+        }
+        return line;
+      });
+      if (modified) {
+        await app.vault.modify(file, newLines.join("\n"));
+      }
+    }
+  } catch (err) {
+    console.error("Failed to clean up fluent-tasks SVG links:", err);
+  }
+}
+async function cleanupSvgEmbedsInNotes(app, targetPath) {
+  if (!targetPath)
+    return;
+  const cleanTarget = sanitizeSvgLinkPath(targetPath);
+  const filename = cleanTarget.split("/").pop() || "";
+  if (!filename)
+    return;
+  const escapedName = filename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const embedRegexes = [
+    new RegExp(`!?\\[\\[(?:[^\\]]*\\/)?${escapedName}(?:\\|[^\\]]*)?\\]\\]`, "gi"),
+    new RegExp(`!?\\[[^\\]]*\\]\\([^)]*${escapedName}[^)]*\\)`, "gi")
+  ];
+  try {
+    const files = app.vault.getFiles().filter((f) => f.extension === "md");
+    for (const file of files) {
+      const content = await app.vault.read(file);
+      if (!content.includes(filename))
+        continue;
+      let modified = false;
+      const lines = content.split("\n");
+      const newLines = [];
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        let isPureEmbed = false;
+        for (const rx of embedRegexes) {
+          rx.lastIndex = 0;
+          const match = rx.exec(line.trim());
+          if (match && match[0] === line.trim()) {
+            isPureEmbed = true;
+            break;
+          }
+        }
+        if (isPureEmbed) {
+          modified = true;
+          continue;
+        }
+        let newLine = line;
+        for (const rx of embedRegexes) {
+          rx.lastIndex = 0;
+          if (rx.test(newLine)) {
+            newLine = newLine.replace(rx, "").trimEnd();
+            modified = true;
+          }
+        }
+        newLines.push(newLine);
+      }
+      if (modified) {
+        await app.vault.modify(file, newLines.join("\n"));
+      }
+    }
+  } catch (err) {
+    console.error("Failed to clean up SVG embeds in notes:", err);
+  }
+}
+
+// src/main.ts
+var DEFAULT_SETTINGS = {
+  openEditorHotkey: "Ctrl+Shift+Alt+I",
+  deleteSvgHotkey: "Ctrl+Delete",
+  smartLayoutHotkey: "Ctrl+Shift+S"
+};
 var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
   constructor() {
     super(...arguments);
@@ -2078,6 +2429,40 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     this.currentModalSvg = null;
     this.toastTimer = null;
     this.activeToastEl = null;
+    this.lastSelfSave = null;
+  }
+  commitActiveOverlay() {
+    if (this.overlay) {
+      this.overlay.commit();
+      this.overlay = null;
+    }
+  }
+  cancelActiveOverlay() {
+    if (this.overlay) {
+      this.overlay.cancel();
+      this.overlay = null;
+    }
+  }
+  isRecentSelfSave(filePath, diskContent) {
+    if (!this.lastSelfSave || !filePath)
+      return false;
+    const cleanTarget = sanitizeSvgLinkPath(filePath).toLowerCase();
+    const cleanSaved = sanitizeSvgLinkPath(this.lastSelfSave.path).toLowerCase();
+    const targetBase = cleanTarget.split("/").pop() || "";
+    const savedBase = cleanSaved.split("/").pop() || "";
+    const pathMatches = cleanTarget === cleanSaved || targetBase !== "" && targetBase === savedBase;
+    if (!pathMatches)
+      return false;
+    if (Date.now() - this.lastSelfSave.timestamp < 2500) {
+      return true;
+    }
+    if (diskContent) {
+      const normDisk = diskContent.replace(/\s+/g, " ").trim();
+      const normSaved = this.lastSelfSave.content.replace(/\s+/g, " ").trim();
+      if (normDisk === normSaved)
+        return true;
+    }
+    return false;
   }
   showSaveToast(message) {
     const text = message || getLocaleStrings().noticeSaved("SVG");
@@ -2136,14 +2521,17 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     }
   }
   smartLayout(targetSvg) {
+    this.commitActiveOverlay();
     const svg = targetSvg ?? this.currentModalSvg ?? document.querySelector(".a1-svg-modal-body svg, .svg-lightbox-content svg");
     if (!svg)
       return false;
-    this.history.recordSnapshot(svg);
+    this.clearHover();
+    this.history.setActiveSvg(svg);
+    const preLayoutSnapshot = cleanSvgHtml(svg.innerHTML);
     const res = smartAutoLayout(svg);
     const i18n = getLocaleStrings();
     if (res.changed) {
-      this.history.markDirty(svg);
+      this.history.recordExplicitSnapshot(svg, preLayoutSnapshot);
       this.showSaveToast(i18n.noticeSmartLayoutApplied);
       return true;
     } else {
@@ -2159,20 +2547,18 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     this.registerEvent(
       this.app.vault.on("modify", async (file) => {
         if (file instanceof import_obsidian.TFile && file.extension === "svg") {
+          if (this.isRecentSelfSave(file.path)) {
+            return;
+          }
           window.dispatchEvent(new CustomEvent("a1-svg-updated", {
-            detail: { path: file.path, name: file.name }
+            detail: { path: file.path, name: file.name, source: "vault-modify" }
           }));
           this.refreshImgEmbeds(file.path);
           if (this.currentModalPath && (this.currentModalPath === file.path || this.currentModalPath.endsWith(file.name))) {
             if (this.currentModalSvg && !this.history.isDirty(this.currentModalSvg)) {
               try {
-                let diskContent = "";
-                if (await this.app.vault.adapter.exists(file.path)) {
-                  diskContent = await this.app.vault.adapter.read(file.path);
-                } else {
-                  diskContent = await this.app.vault.read(file);
-                }
-                if (diskContent) {
+                const { content: diskContent } = await readVaultSvgFile(this.app, file);
+                if (diskContent && !this.isRecentSelfSave(file.path, diskContent)) {
                   this.hotReloadModal(diskContent);
                 }
               } catch (e) {
@@ -2420,6 +2806,22 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     return false;
   }
   onKeyDown(evt) {
+    if (document.querySelector(".a1-svg-confirm-overlay, .svg-confirm-backdrop")) {
+      return;
+    }
+    if (this.overlay) {
+      if ((evt.ctrlKey || evt.metaKey) && !evt.altKey && !evt.shiftKey && (evt.key === "s" || evt.key === "S")) {
+        const activeSvg = this.history.getActiveSvg() ?? this.currentModalSvg ?? document.querySelector(".a1-svg-modal-body svg, .svg-lightbox-content svg");
+        if (activeSvg) {
+          evt.preventDefault();
+          evt.stopPropagation();
+          evt.stopImmediatePropagation();
+          this.commitActiveOverlay();
+          void this.saveCurrentSvg(activeSvg, true);
+        }
+      }
+      return;
+    }
     if (this.isSvgEditHotkey(evt)) {
       evt.preventDefault();
       evt.stopPropagation();
@@ -2428,8 +2830,6 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       return;
     }
     if (evt.key === "F2" && !evt.repeat && !evt.altKey && !evt.metaKey && !evt.ctrlKey) {
-      if (this.overlay)
-        return;
       const el = this.lastPointerX > 0 || this.lastPointerY > 0 ? document.elementFromPoint(this.lastPointerX, this.lastPointerY) : null;
       const target = this.hoveredSvgTarget ?? (el ? this.matchSvgElement(el) : null);
       const text = this.hovered ?? (el ? findTextInCard(el, this.lastPointerX, this.lastPointerY) : null);
@@ -2462,7 +2862,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
         return;
       }
     }
-    if ((evt.ctrlKey || evt.metaKey) && !evt.altKey && !this.overlay) {
+    if ((evt.ctrlKey || evt.metaKey) && !evt.altKey) {
       const activeSvg = this.history.getActiveSvg();
       if (activeSvg) {
         if (evt.key === "z" || evt.key === "Z") {
@@ -2508,15 +2908,15 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     const delTarget = resolveDeleteTarget(candidate, this.lastPointerX, this.lastPointerY);
     if (!delTarget || !this.isInteractiveSvg(delTarget.svg))
       return false;
-    this.history.recordSnapshot(delTarget.svg);
-    delTarget.element.remove();
     this.clearHover();
     this.clearHoveredSvgTarget();
+    this.history.recordSnapshot(delTarget.svg);
+    delTarget.element.remove();
     const inModal = !!delTarget.svg.closest(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body");
     if (!inModal) {
       void this.persistSvg(delTarget.svg);
     }
-    const isZh = getLocaleStrings().noticeUndo === "\u5DF2\u64A4\u9500";
+    const isZh = isChineseLocale();
     this.showSaveToast(isZh ? "\u5DF2\u5220\u9664 UI \u6846 (Ctrl+Z \u53EF\u64A4\u9500)" : "UI box deleted (Ctrl+Z to undo)");
     return true;
   }
@@ -2546,20 +2946,23 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     const scaleTarget = resolveScaleTarget(candidate, this.lastPointerX, this.lastPointerY);
     if (!scaleTarget || !this.isInteractiveSvg(scaleTarget.svg))
       return false;
-    this.history.recordSnapshot(scaleTarget.svg);
+    this.history.setActiveSvg(scaleTarget.svg);
+    const preScaleSnapshot = cleanSvgHtml(scaleTarget.svg.innerHTML);
     const res = scaleCard(scaleTarget.element, scaleTarget.svg, factor);
     if (!res)
       return false;
+    this.history.recordExplicitSnapshot(scaleTarget.svg, preScaleSnapshot);
     const inModal = !!scaleTarget.svg.closest(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body");
     if (!inModal) {
       void this.persistSvg(scaleTarget.svg);
     }
     const pct = Math.round(res.scale * 100);
-    const isZh = getLocaleStrings().noticeUndo === "\u5DF2\u64A4\u9500";
+    const isZh = isChineseLocale();
     this.showSaveToast(isZh ? `UI \u5927\u5C0F: ${pct}% (Ctrl+Z \u53EF\u64A4\u9500)` : `UI Scale: ${pct}% (Ctrl+Z to undo)`);
     return true;
   }
   undo(svg) {
+    this.commitActiveOverlay();
     const res = this.history.undo(svg);
     if (res) {
       this.clearHover();
@@ -2568,6 +2971,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     return res;
   }
   redo(svg) {
+    this.commitActiveOverlay();
     const res = this.history.redo(svg);
     if (res) {
       this.clearHover();
@@ -2582,16 +2986,21 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     this.history.setActiveSvg(svg);
   }
   async saveCurrentSvg(svg, keepHistory = false) {
+    this.commitActiveOverlay();
+    this.clearHover();
     const target = svg ?? this.history.getActiveSvg() ?? this.currentModalSvg ?? document.querySelector(".a1-svg-modal-body svg, .svg-lightbox-content svg");
     if (!target)
-      return;
-    await this.persistSvg(target);
-    this.history.markSaved(target, keepHistory);
-    const svgPath = target.getAttribute(SVG_PATH_ATTR) || this.currentModalPath;
-    const name = svgPath ? svgPath.split("/").pop() || "SVG" : "SVG";
-    this.showSaveToast(getLocaleStrings().noticeSaved(name));
+      return false;
+    const ok = await this.persistSvg(target);
+    if (ok) {
+      this.history.markSaved(target, keepHistory);
+      return true;
+    }
+    new import_obsidian.Notice(getLocaleStrings().noticeSaveFailed);
+    return false;
   }
   discardCurrentSvg(svg) {
+    this.cancelActiveOverlay();
     const target = svg ?? this.history.getActiveSvg();
     if (!target)
       return;
@@ -2857,7 +3266,12 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     text?.classList.add("a1-svg-hover-text");
   }
   clearHover() {
-    this.hovered?.classList.remove("a1-svg-hover-text");
+    if (this.hovered) {
+      this.hovered.classList.remove("a1-svg-hover-text");
+      if (this.hovered.classList.length === 0) {
+        this.hovered.removeAttribute("class");
+      }
+    }
     this.hovered = null;
   }
   setHoveredSvgTarget(target) {
@@ -2872,6 +3286,9 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
   clearHoveredSvgTarget() {
     if (this.hoveredSvgTarget && !(this.hoveredSvgTarget instanceof SVGElement)) {
       this.hoveredSvgTarget.classList.remove("a1-svg-hover-image");
+      if (this.hoveredSvgTarget.classList.length === 0) {
+        this.hoveredSvgTarget.removeAttribute("class");
+      }
     }
     this.hoveredSvgTarget = null;
   }
@@ -2881,6 +3298,8 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     if (!hit || !svg)
       return;
     this.overlay?.close();
+    this.history.setActiveSvg(svg);
+    const preEditSnapshot = cleanSvgHtml(svg.innerHTML);
     adaptBackgroundToText(hit.textEl);
     const rect = textEl.getBoundingClientRect();
     const cs = getComputedStyle(textEl);
@@ -2904,11 +3323,19 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       },
       onCommit: (value) => {
         this.overlay = null;
-        this.history.recordSnapshot(svg);
-        commitText(hit, value);
-        const inModal = !!svg.closest(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body");
-        if (!inModal) {
-          void this.persistSvg(svg);
+        const normNew = value.replace(/\u00a0/g, " ").trim();
+        const normInit = initialVal.replace(/\u00a0/g, " ").trim();
+        if (normNew === normInit) {
+          if (cleanSvgHtml(svg.innerHTML) !== preEditSnapshot) {
+            replaceSvgChildrenFromMarkup(svg, preEditSnapshot);
+          }
+        } else {
+          this.history.recordExplicitSnapshot(svg, preEditSnapshot);
+          commitText(hit, value);
+          const inModal = !!svg.closest(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body");
+          if (!inModal) {
+            void this.persistSvg(svg);
+          }
         }
         const focusTarget = svg.closest(".a1-svg-modal-dialog, .svg-lightbox-modal") ?? document.querySelector(".a1-svg-modal-dialog, .svg-lightbox-modal");
         if (focusTarget) {
@@ -2917,8 +3344,12 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       },
       onCancel: () => {
         this.overlay = null;
-        writeText(hit.textEl, initialVal);
-        adaptBackgroundToText(hit.textEl, initialVal);
+        if (cleanSvgHtml(svg.innerHTML) !== preEditSnapshot) {
+          replaceSvgChildrenFromMarkup(svg, preEditSnapshot);
+        } else {
+          writeText(hit.textEl, initialVal);
+          adaptBackgroundToText(hit.textEl, initialVal);
+        }
         const focusTarget = svg.closest(".a1-svg-modal-dialog, .svg-lightbox-modal") ?? document.querySelector(".a1-svg-modal-dialog, .svg-lightbox-modal");
         if (focusTarget) {
           focusTarget.focus();
@@ -2984,42 +3415,61 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
    * Otherwise splices into the active Markdown note.
    */
   async persistSvg(svg) {
-    const svgPath = svg.getAttribute(SVG_PATH_ATTR);
+    this.commitActiveOverlay();
+    this.clearHover();
+    const containerWithPath = svg.closest(`[${SVG_PATH_ATTR}]`);
+    const rawPath = svg.getAttribute(SVG_PATH_ATTR) || containerWithPath?.getAttribute(SVG_PATH_ATTR) || (svg === this.currentModalSvg ? this.currentModalPath : null) || "";
+    const svgPath = sanitizeSvgLinkPath(rawPath);
     if (svgPath) {
-      const file2 = this.app.vault.getAbstractFileByPath(svgPath);
+      svg.setAttribute(SVG_PATH_ATTR, svgPath);
       const live2 = serializeSvg(svg);
-      if (file2 instanceof import_obsidian.TFile) {
-        await this.app.vault.modify(file2, live2);
-      } else {
-        try {
-          await this.app.vault.adapter.write(svgPath, live2);
-        } catch (err) {
-          console.error("Failed to write svg file via adapter:", err);
-        }
+      const activeView = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+      const sourcePath = activeView?.file?.path || this.app.workspace.getActiveFile()?.path || "";
+      this.lastSelfSave = { path: svgPath, timestamp: Date.now(), content: live2 };
+      const { ok, resolvedPath } = await writeVaultSvgFile(this.app, svgPath, live2, sourcePath);
+      if (!ok) {
+        return false;
       }
-      this.refreshImgEmbeds(svgPath);
-      window.dispatchEvent(new CustomEvent("a1-svg-updated", { detail: { path: svgPath, content: live2 } }));
-      const name = svgPath.split("/").pop() || "SVG";
+      const finalPath = resolvedPath || svgPath;
+      this.lastSelfSave = { path: finalPath, timestamp: Date.now(), content: live2 };
+      svg.setAttribute(SVG_PATH_ATTR, finalPath);
+      if (containerWithPath) {
+        containerWithPath.setAttribute(SVG_PATH_ATTR, finalPath);
+      }
+      if (svg === this.currentModalSvg) {
+        this.currentModalPath = finalPath;
+      }
+      this.refreshImgEmbeds(finalPath);
+      window.dispatchEvent(
+        new CustomEvent("a1-svg-updated", {
+          detail: { path: finalPath, content: live2, source: "self-save" }
+        })
+      );
+      const name = finalPath.split("/").pop() || "SVG";
       this.showSaveToast(getLocaleStrings().noticeSaved(name));
-      this.clearHover();
-      return;
+      return true;
     }
     const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
     const file = view?.file ?? this.app.workspace.getActiveFile();
     if (!file)
-      return;
+      return false;
     const marker = this.markerFor(svg);
     const live = serializeSvg(svg);
+    let didSplice = false;
     await this.app.vault.process(file, (data) => {
       const span = matchSpan(data, this.domIndex(svg), marker);
       if (!span)
         return data;
+      didSplice = true;
       const stamped = ensureMarker(live, marker);
       return spliceSvg(data, span, stamped);
     });
-    const isZh = getLocaleStrings().noticeUndo === "\u5DF2\u64A4\u9500";
+    if (!didSplice) {
+      return false;
+    }
+    const isZh = isChineseLocale();
     this.showSaveToast(isZh ? "SVG \u5DF2\u4FDD\u5B58\u5230\u7B14\u8BB0" : "SVG saved to note");
-    this.clearHover();
+    return true;
   }
   refreshImgEmbeds(filePath) {
     const filename = filePath.split("/").pop() || "";
@@ -3063,21 +3513,11 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
   hotReloadModal(freshSvgContent) {
     if (!this.activeModal || !this.currentModalBody)
       return;
-    let processed = freshSvgContent.trim();
-    if (!processed.includes("viewBox") && !processed.includes("viewbox")) {
-      const widthMatch = processed.match(/width=["']?(\d+(?:\.\d+)?)px?["']?/i);
-      const heightMatch = processed.match(/height=["']?(\d+(?:\.\d+)?)px?["']?/i);
-      if (widthMatch && heightMatch) {
-        processed = processed.replace(/<svg\b/i, `<svg viewBox="0 0 ${widthMatch[1]} ${heightMatch[1]}"`);
-      }
-    }
-    if (this.currentModalPath) {
-      processed = processed.replace(/<svg\b/i, `<svg ${SVG_PATH_ATTR}="${this.currentModalPath}"`);
-    }
+    const processed = prepareSvgMarkup(freshSvgContent, this.currentModalPath || void 0);
     try {
       const parsed = new DOMParser().parseFromString(processed, "image/svg+xml");
       const rootSvg = parsed.documentElement;
-      if (rootSvg) {
+      if (rootSvg && rootSvg.tagName.toLowerCase() !== "parsererror" && !rootSvg.querySelector("parsererror")) {
         const adopted = document.adoptNode ? document.adoptNode(rootSvg) : rootSvg;
         while (this.currentModalBody.firstChild) {
           this.currentModalBody.firstChild.remove();
@@ -3085,11 +3525,14 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
         this.currentModalBody.appendChild(adopted);
         const newModalSvg = this.currentModalBody.querySelector("svg");
         if (newModalSvg) {
+          if (this.currentModalPath) {
+            newModalSvg.setAttribute(SVG_PATH_ATTR, this.currentModalPath);
+          }
           this.currentModalSvg = newModalSvg;
           this.history.setActiveSvg(newModalSvg);
         }
         window.dispatchEvent(new CustomEvent("a1-svg-updated", {
-          detail: { path: this.currentModalPath, content: processed }
+          detail: { path: this.currentModalPath, content: processed, source: "hot-reload" }
         }));
         const name = this.currentModalPath ? this.currentModalPath.split("/").pop() || "SVG" : "SVG";
         new import_obsidian.Notice(getLocaleStrings().noticeSvgUpdated(name));
@@ -3100,18 +3543,10 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
   }
   async checkAndRefreshActiveSvg() {
     if (this.currentModalPath && this.currentModalSvg && this.activeModal) {
-      if (!this.history.isDirty(this.currentModalSvg)) {
+      if (!this.history.isDirty(this.currentModalSvg) && !this.isRecentSelfSave(this.currentModalPath)) {
         try {
-          let diskContent = "";
-          if (await this.app.vault.adapter.exists(this.currentModalPath)) {
-            diskContent = await this.app.vault.adapter.read(this.currentModalPath);
-          } else {
-            const file = this.app.vault.getAbstractFileByPath(this.currentModalPath);
-            if (file instanceof import_obsidian.TFile) {
-              diskContent = await this.app.vault.read(file);
-            }
-          }
-          if (diskContent) {
+          const { content: diskContent } = await readVaultSvgFile(this.app, this.currentModalPath);
+          if (diskContent && !this.isRecentSelfSave(this.currentModalPath, diskContent)) {
             const currentLive = serializeSvg(this.currentModalSvg);
             const normDisk = diskContent.replace(/\s+/g, " ").trim();
             const normLive = currentLive.replace(/\s+/g, " ").trim();
@@ -3188,68 +3623,32 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
       const activeView = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
       const sourcePath = activeView?.file?.path || this.app.workspace.getActiveFile()?.path || "";
       for (const rawCand of rawCandidates) {
-        const clean = rawCand.replace(/^\[\[/, "").replace(/\]\]$/, "").split("|")[0].trim();
+        const clean = sanitizeSvgLinkPath(rawCand);
         if (!clean)
           continue;
-        if (sourcePath) {
-          file = this.app.metadataCache.getFirstLinkpathDest(clean, sourcePath);
-        }
-        if (!file) {
-          file = this.app.metadataCache.getFirstLinkpathDest(clean, "");
-        }
-        if (!file) {
-          file = this.app.vault.getAbstractFileByPath(clean);
-        }
-        if (!file) {
-          const allFiles = this.app.vault.getFiles();
-          const cleanLower = clean.toLowerCase();
-          file = allFiles.find(
-            (f) => f.path.toLowerCase() === cleanLower || f.name.toLowerCase() === cleanLower || f.path.toLowerCase().endsWith("/" + cleanLower) || cleanLower.endsWith(".svg") && f.name.toLowerCase().endsWith(cleanLower) || filenameFromSrc && f.name.toLowerCase() === filenameFromSrc.toLowerCase()
-          ) || null;
-        }
-        if (file && file.extension === "svg") {
-          try {
-            if (await this.app.vault.adapter.exists(file.path)) {
-              rawSvgContent = await this.app.vault.adapter.read(file.path);
-            } else {
-              rawSvgContent = await this.app.vault.read(file);
-            }
-            relPath = file.path;
-            title = i18n.modalTitleNamed(file.name);
-            break;
-          } catch {
-          }
-        }
-        if (!rawSvgContent) {
-          try {
-            const exists = await this.app.vault.adapter.exists(clean);
-            if (exists) {
-              rawSvgContent = await this.app.vault.adapter.read(clean);
-              relPath = clean;
-              title = i18n.modalTitleNamed(clean.split("/").pop() || "SVG");
-              break;
-            }
-          } catch {
-          }
+        const readRes = await readVaultSvgFile(this.app, clean, sourcePath);
+        if (readRes.content) {
+          rawSvgContent = readRes.content;
+          relPath = readRes.path;
+          file = readRes.file;
+          const displayName = file?.name || relPath.split("/").pop() || "SVG";
+          title = i18n.modalTitleNamed(displayName);
+          break;
         }
       }
     }
     if (!rawSvgContent && !img && !embed.classList?.contains("internal-embed") && !embed.classList?.contains("image-embed")) {
       const candidateSvg = target instanceof SVGSVGElement ? target : target.closest("svg") ?? target.querySelector("svg");
       if (candidateSvg && isDiagramSvg(candidateSvg)) {
-        const svgPath = candidateSvg.getAttribute(SVG_PATH_ATTR);
+        const svgPath = candidateSvg.getAttribute(SVG_PATH_ATTR) || candidateSvg.closest(`[${SVG_PATH_ATTR}]`)?.getAttribute(SVG_PATH_ATTR) || "";
         if (svgPath) {
-          const f = this.app.vault.getAbstractFileByPath(svgPath);
-          if (f instanceof import_obsidian.TFile)
-            file = f;
-          relPath = svgPath;
-          try {
-            if (await this.app.vault.adapter.exists(svgPath)) {
-              rawSvgContent = await this.app.vault.adapter.read(svgPath);
-            } else if (file) {
-              rawSvgContent = await this.app.vault.read(file);
-            }
-          } catch {
+          const readRes = await readVaultSvgFile(this.app, svgPath);
+          if (readRes.content) {
+            rawSvgContent = readRes.content;
+            relPath = readRes.path;
+            file = readRes.file;
+          } else {
+            relPath = sanitizeSvgLinkPath(svgPath);
           }
         }
         if (!rawSvgContent) {
@@ -3266,63 +3665,24 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     this.renderModalWithContent(rawSvgContent, relPath || file?.path || "", title);
   }
   async openSvgEditorByPathOrLink(linkPath) {
-    const clean = linkPath.replace(/^\[\[/, "").replace(/\]\]$/, "").split("|")[0].trim();
+    const clean = sanitizeSvgLinkPath(linkPath);
     if (!clean)
       return;
     const i18n = getLocaleStrings();
     const activeView = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
     const sourcePath = activeView?.file?.path || this.app.workspace.getActiveFile()?.path || "";
-    let file = null;
-    if (sourcePath)
-      file = this.app.metadataCache.getFirstLinkpathDest(clean, sourcePath);
-    if (!file)
-      file = this.app.metadataCache.getFirstLinkpathDest(clean, "");
-    if (!file)
-      file = this.app.vault.getAbstractFileByPath(clean);
-    if (!file) {
-      const cleanLower = clean.toLowerCase();
-      file = this.app.vault.getFiles().find(
-        (f) => f.path.toLowerCase() === cleanLower || f.name.toLowerCase() === cleanLower || f.path.toLowerCase().endsWith("/" + cleanLower)
-      ) || null;
-    }
-    let rawSvgContent = "";
-    let relPath = file ? file.path : clean;
-    if (file) {
-      try {
-        rawSvgContent = await this.app.vault.read(file);
-      } catch {
-      }
-    }
-    if (!rawSvgContent) {
-      try {
-        if (await this.app.vault.adapter.exists(clean)) {
-          rawSvgContent = await this.app.vault.adapter.read(clean);
-          relPath = clean;
-        }
-      } catch {
-      }
-    }
+    const { content: rawSvgContent, path: relPath, file } = await readVaultSvgFile(this.app, clean, sourcePath);
     if (!rawSvgContent) {
       new import_obsidian.Notice(i18n.noticeCannotParse);
       return;
     }
-    const name = file ? file.name : clean.split("/").pop() || "SVG";
+    const name = file ? file.name : relPath.split("/").pop() || "SVG";
     this.renderModalWithContent(rawSvgContent, relPath, i18n.modalTitleNamed(name));
   }
   renderModalWithContent(rawSvgContent, relPath, title) {
     const i18n = getLocaleStrings();
-    if (!rawSvgContent.includes("viewBox") && !rawSvgContent.includes("viewbox")) {
-      const widthMatch = rawSvgContent.match(/width=["']?(\d+(?:\.\d+)?)px?["']?/i);
-      const heightMatch = rawSvgContent.match(/height=["']?(\d+(?:\.\d+)?)px?["']?/i);
-      if (widthMatch && heightMatch) {
-        const w = widthMatch[1];
-        const h = heightMatch[1];
-        rawSvgContent = rawSvgContent.replace(/<svg\b/i, `<svg viewBox="0 0 ${w} ${h}"`);
-      }
-    }
-    if (relPath) {
-      rawSvgContent = rawSvgContent.replace(/<svg\b/i, `<svg ${SVG_PATH_ATTR}="${relPath}"`);
-    }
+    const cleanRelPath = sanitizeSvgLinkPath(relPath);
+    const preparedMarkup = prepareSvgMarkup(rawSvgContent, cleanRelPath || void 0);
     const backdrop = document.createElement("div");
     backdrop.className = "a1-svg-modal-backdrop";
     const dialog = document.createElement("div");
@@ -3472,10 +3832,13 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     header.appendChild(actionGroup);
     const body = document.createElement("div");
     body.className = "a1-svg-modal-body";
+    if (cleanRelPath) {
+      body.setAttribute(SVG_PATH_ATTR, cleanRelPath);
+    }
     try {
-      const parsed = new DOMParser().parseFromString(rawSvgContent, "image/svg+xml");
+      const parsed = new DOMParser().parseFromString(preparedMarkup, "image/svg+xml");
       const rootSvg = parsed.documentElement;
-      if (rootSvg) {
+      if (rootSvg && rootSvg.tagName.toLowerCase() !== "parsererror" && !rootSvg.querySelector("parsererror")) {
         const adopted = document.adoptNode ? document.adoptNode(rootSvg) : rootSvg;
         body.appendChild(adopted);
       }
@@ -3484,9 +3847,12 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     }
     const modalSvg = body.querySelector("svg");
     if (modalSvg) {
+      if (cleanRelPath) {
+        modalSvg.setAttribute(SVG_PATH_ATTR, cleanRelPath);
+      }
       this.history.setActiveSvg(modalSvg);
     }
-    this.currentModalPath = relPath;
+    this.currentModalPath = cleanRelPath;
     this.currentModalTitle = title;
     this.currentModalBody = body;
     this.currentModalSvg = modalSvg;
@@ -3495,6 +3861,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     backdrop.appendChild(dialog);
     let isConfirming = false;
     const closeModal = () => {
+      this.cancelActiveOverlay();
       this.clearHover();
       backdrop.remove();
       if (this.activeModal === backdrop)
@@ -3508,15 +3875,21 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     const requestClose = () => {
       if (isConfirming)
         return;
+      this.commitActiveOverlay();
       this.clearHover();
       if (modalSvg && this.history.isDirty(modalSvg)) {
         isConfirming = true;
         this.promptSaveConfirmation(
           async () => {
             isConfirming = false;
-            await this.persistSvg(modalSvg);
-            this.history.markSaved(modalSvg);
-            closeModal();
+            const ok = await this.persistSvg(modalSvg);
+            if (ok) {
+              this.history.markSaved(modalSvg);
+              closeModal();
+            } else {
+              new import_obsidian.Notice(getLocaleStrings().noticeSaveFailed);
+              dialog.focus();
+            }
           },
           () => {
             isConfirming = false;
@@ -3653,59 +4026,13 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     saveBtn.focus();
   }
   isFluentTasksInstalled() {
-    const plugins = this.app.plugins;
-    if (!plugins)
-      return false;
-    return !!(plugins.plugins?.["fluent-tasks"] || plugins.enabledPlugins?.has?.("fluent-tasks"));
+    return isFluentTasksInstalled(this.app);
   }
   isTodoDataSvg(targetPath) {
-    if (!targetPath)
-      return false;
-    const clean = targetPath.replace(/\\/g, "/").toLowerCase();
-    return clean.startsWith("tododata/") || clean.includes("/tododata/") || clean === "tododata";
+    return isTodoDataSvg(targetPath);
   }
   async getLinkedTasksInfo(targetPath) {
-    if (!targetPath)
-      return { count: 0, titles: [] };
-    const cleanTarget = targetPath.replace(/\\/g, "/").trim();
-    const filename = cleanTarget.split("/").pop() || "";
-    if (!filename)
-      return { count: 0, titles: [] };
-    const titles = [];
-    try {
-      const files = this.app.vault.getFiles();
-      const todoFiles = files.filter((f) => f.extension === "md" && (f.path.startsWith("TodoData/") || f.path.includes("TodoData")));
-      for (const file of todoFiles) {
-        const content = await this.app.vault.read(file);
-        if (!content.includes("%%{") || !content.includes("svgs"))
-          continue;
-        const lines = content.split("\n");
-        for (const line of lines) {
-          const match = line.match(/%%(\{.*?\})%%/);
-          if (!match)
-            continue;
-          try {
-            const meta = JSON.parse(match[1]);
-            if (Array.isArray(meta.svgs) && meta.svgs.length > 0) {
-              const isLinked = meta.svgs.some((s) => {
-                if (typeof s !== "string")
-                  return false;
-                const clean = s.replace(/\\/g, "/").replace(/^\[\[/, "").replace(/\]\]$/, "").split("|")[0].trim();
-                return clean === cleanTarget || clean.endsWith("/" + filename) || cleanTarget.endsWith("/" + clean) || clean.split("/").pop() === filename;
-              });
-              if (isLinked) {
-                const rawTitle = line.replace(/^- \[([ x])\]\s*/, "").replace(/\s*%%\{.*?\}%%/, "").trim();
-                titles.push(rawTitle || "Untitled task");
-              }
-            }
-          } catch {
-          }
-        }
-      }
-    } catch (err) {
-      console.error("Failed to detect linked tasks:", err);
-    }
-    return { count: titles.length, titles };
+    return getLinkedTasksInfo(this.app, targetPath);
   }
   promptDeleteActiveSvg() {
     const targetPath = this.currentModalPath || (document.querySelector(".svg-lightbox-content svg, .a1-svg-modal-body svg")?.getAttribute("data-a1-svg-path") || "");
@@ -3822,14 +4149,7 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     const name = targetPath ? targetPath.split("/").pop() || "SVG" : "SVG";
     if (targetPath) {
       try {
-        let file = this.app.vault.getAbstractFileByPath(targetPath);
-        if (!file) {
-          file = this.app.metadataCache.getFirstLinkpathDest(targetPath, "");
-        }
-        if (!file) {
-          const clean = targetPath.split("/").pop() || "";
-          file = this.app.vault.getFiles().find((f) => f.name === clean || f.path.endsWith("/" + clean)) || null;
-        }
+        const file = resolveVaultSvgFile(this.app, targetPath);
         if (file) {
           await this.app.vault.trash(file, true);
         } else if (await this.app.vault.adapter.exists(targetPath)) {
@@ -3865,115 +4185,10 @@ var A1SvgQuickEditorPlugin = class extends import_obsidian.Plugin {
     }
   }
   async cleanupSvgEmbedsInNotes(targetPath) {
-    if (!targetPath)
-      return;
-    const cleanTarget = targetPath.replace(/\\/g, "/").trim();
-    const filename = cleanTarget.split("/").pop() || "";
-    if (!filename)
-      return;
-    const escapedName = filename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const embedRegexes = [
-      new RegExp(`!?\\[\\[(?:[^\\]]*\\/)?${escapedName}(?:\\|[^\\]]*)?\\]\\]`, "gi"),
-      new RegExp(`!?\\[[^\\]]*\\]\\([^)]*${escapedName}[^)]*\\)`, "gi")
-    ];
-    try {
-      const files = this.app.vault.getFiles().filter((f) => f.extension === "md");
-      for (const file of files) {
-        const content = await this.app.vault.read(file);
-        if (!content.includes(filename))
-          continue;
-        let modified = false;
-        const lines = content.split("\n");
-        const newLines = [];
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          let isPureEmbed = false;
-          for (const rx of embedRegexes) {
-            rx.lastIndex = 0;
-            const match = rx.exec(line.trim());
-            if (match && match[0] === line.trim()) {
-              isPureEmbed = true;
-              break;
-            }
-          }
-          if (isPureEmbed) {
-            modified = true;
-            continue;
-          }
-          let newLine = line;
-          for (const rx of embedRegexes) {
-            rx.lastIndex = 0;
-            if (rx.test(newLine)) {
-              newLine = newLine.replace(rx, "").trimEnd();
-              modified = true;
-            }
-          }
-          newLines.push(newLine);
-        }
-        if (modified) {
-          await this.app.vault.modify(file, newLines.join("\n"));
-        }
-      }
-    } catch (err) {
-      console.error("Failed to clean up SVG embeds in notes:", err);
-    }
+    await cleanupSvgEmbedsInNotes(this.app, targetPath);
   }
   async cleanupFluentTasksSvgLinks(targetPath) {
-    if (!targetPath)
-      return;
-    const cleanTarget = targetPath.replace(/\\/g, "/").trim();
-    const filename = cleanTarget.split("/").pop() || "";
-    if (!filename)
-      return;
-    try {
-      const files = this.app.vault.getFiles();
-      const todoFiles = files.filter((f) => f.extension === "md" && (f.path.startsWith("TodoData/") || f.path.includes("TodoData")));
-      for (const file of todoFiles) {
-        const content = await this.app.vault.read(file);
-        if (!content.includes("%%{") || !content.includes("svgs"))
-          continue;
-        let modified = false;
-        const newLines = content.split("\n").map((line) => {
-          const match = line.match(/%%(\{.*?\})%%/);
-          if (!match)
-            return line;
-          try {
-            const meta = JSON.parse(match[1]);
-            if (Array.isArray(meta.svgs) && meta.svgs.length > 0) {
-              const originalLen = meta.svgs.length;
-              const remaining = meta.svgs.filter((s) => {
-                if (typeof s !== "string")
-                  return false;
-                const clean = s.replace(/\\/g, "/").trim();
-                if (clean === cleanTarget)
-                  return false;
-                if (clean.endsWith("/" + filename) || cleanTarget.endsWith("/" + clean))
-                  return false;
-                if (clean.split("/").pop() === filename)
-                  return false;
-                return true;
-              });
-              if (remaining.length !== originalLen) {
-                modified = true;
-                if (remaining.length > 0) {
-                  meta.svgs = remaining;
-                } else {
-                  delete meta.svgs;
-                }
-                return line.replace(/%%\{.*?\}%%/, `%%${JSON.stringify(meta)}%%`);
-              }
-            }
-          } catch {
-          }
-          return line;
-        });
-        if (modified) {
-          await this.app.vault.modify(file, newLines.join("\n"));
-        }
-      }
-    } catch (err) {
-      console.error("Failed to clean up fluent-tasks SVG links:", err);
-    }
+    await cleanupFluentTasksSvgLinks(this.app, targetPath);
   }
 };
 var A1SvgQuickEditorSettingTab = class extends import_obsidian.PluginSettingTab {

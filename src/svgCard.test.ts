@@ -2,7 +2,8 @@ import { parseHTML } from "linkedom";
 import { describe, expect, it } from "vitest";
 import { adaptAllTextBackgrounds, adaptBackgroundToText, cloneCard, collectAlignTargets, commitText, estimateStringWidth, findBackgroundRectForText, findCard, findTextInCard, insertCloneSibling, layoutHorizontalRows, nudge, resetCloneSeq, resolveCloneTarget, resolveDeleteTarget, resolveHit, resolveScaleTarget, scaleCard, serializeSvg, smartAutoLayout, snapDelta } from "./svgCard";
 import { ensureMarker, findSvgSpans, matchSpan, spliceSvg } from "./svgSource";
-import { SvgHistoryManager } from "./svgHistory";
+import { cleanSvgHtml, SvgHistoryManager } from "./svgHistory";
+import { prepareSvgMarkup } from "./svgVaultUtils";
 
 if (typeof DOMParser === "undefined") {
 	(globalThis as any).DOMParser = parseHTML("").DOMParser;
@@ -1131,5 +1132,71 @@ describe("adaptBackgroundToText", () => {
 		expect(parseFloat(m3![2])).toBeCloseTo(15, 1);
 	});
 });
+
+describe("Bug 1 & Bug 2 regression tests: Save & Dirty State", () => {
+	it("Bug 2: markSaved followed by hover class addition/removal (empty class='') never triggers false isDirty", () => {
+		const { svg } = doc(`
+<svg viewBox="0 0 400 100">
+  <g id="card">
+    <rect width="120" height="32"></rect>
+    <text id="t1" x="60" y="20">Original</text>
+  </g>
+</svg>`);
+		const svgEl = svg as unknown as SVGSVGElement;
+		const history = new SvgHistoryManager();
+		history.setActiveSvg(svgEl);
+		expect(history.isDirty(svgEl)).toBe(false);
+
+		const text = svgEl.querySelector("#t1")!;
+		// User edits text
+		history.recordSnapshot(svgEl);
+		text.textContent = "Modified";
+		expect(history.isDirty(svgEl)).toBe(true);
+
+		// Simulate hover class present when Ctrl+S is pressed, or removed leaving class=""
+		text.setAttribute("class", "");
+		history.markSaved(svgEl, true);
+		expect(history.isDirty(svgEl)).toBe(false);
+
+		// User moves mouse 1px -> hover class added, then presses Esc
+		text.setAttribute("class", "a1-svg-hover-text");
+		expect(history.isDirty(svgEl)).toBe(false);
+
+		// Hover class removed leaving empty class="" or no class attribute
+		text.removeAttribute("class");
+		expect(history.isDirty(svgEl)).toBe(false);
+
+		// Ctrl+Z after Ctrl+S (keepHistory=true) reverts to "Original" and marks dirty relative to saved state
+		expect(history.undo(svgEl)).toBe(true);
+		expect(svgEl.querySelector("#t1")!.textContent).toBe("Original");
+		expect(history.isDirty(svgEl)).toBe(true);
+
+		// Ctrl+Y returns to "Modified" (the saved state) -> isDirty becomes false again!
+		expect(history.redo(svgEl)).toBe(true);
+		expect(svgEl.querySelector("#t1")!.textContent).toBe("Modified");
+		expect(history.isDirty(svgEl)).toBe(false);
+	});
+
+	it("cleanSvgHtml strips transient hover classes while preserving legitimate SVG classes", () => {
+		const raw = `<g class="card-node a1-svg-hover-text"><text class="a1-svg-hover-text">Hi</text><rect class=""/></g>`;
+		const cleaned = cleanSvgHtml(raw);
+		expect(cleaned).toBe(`<g class="card-node"><text>Hi</text><rect/></g>`);
+	});
+
+	it("Bug 1: prepareSvgMarkup stamps data-a1-svg-path idempotently without duplicate attributes", () => {
+		const raw = `<svg data-a1-svg-path="TodoData/old.svg" width="800" height="400"><text>Hello</text></svg>`;
+		const prepared = prepareSvgMarkup(raw, "TodoData/new.svg");
+		const matches = prepared.match(/data-a1-svg-path=/g) || [];
+		expect(matches.length).toBe(1);
+		expect(prepared).toContain(`data-a1-svg-path="TodoData/new.svg"`);
+		expect(prepared).toContain(`viewBox="0 0 800 400"`);
+
+		// Serialize strips data-a1-svg-path for disk storage
+		const { svg } = doc(prepared);
+		const serialized = serializeSvg(svg);
+		expect(serialized).not.toContain("data-a1-svg-path");
+	});
+});
+
 
 

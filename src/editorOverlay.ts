@@ -112,7 +112,7 @@ export function openTextOverlay(parent: HTMLElement, opts: OverlayOptions): Over
 		handleLiveInput();
 	});
 	input.addEventListener("keydown", (e) => {
-		if (e.isComposing || composing || e.key === "Process" || e.keyCode === 229) return;
+		if (e.isComposing || composing || e.key === "Process") return;
 		if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === "s" || e.key === "S")) {
 			e.preventDefault();
 			e.stopPropagation();

@@ -1,7 +1,11 @@
-import { App, TFile } from "obsidian";
+import type { App, TFile } from "obsidian";
 
 export const MARK = "data-a1-svg";
 export const SVG_PATH_ATTR = "data-a1-svg-path";
+
+function isTFile(file: unknown): file is TFile {
+	return !!file && typeof file === "object" && "path" in file && "extension" in file && typeof (file as TFile).extension === "string";
+}
 
 export function isDiagramSvg(el: Element | null): el is SVGSVGElement {
 	if (!el) return false;
@@ -48,9 +52,10 @@ export function prepareSvgMarkup(rawSvgContent: string, relPath?: string): strin
 	// Strip any pre-existing data-a1-svg-path on root <svg> so we never produce duplicate attributes
 	processed = processed.replace(/(<svg\b[^>]*?)\s+data-a1-svg-path="[^"]*"/gi, "$1");
 
-	if (!processed.includes("viewBox") && !processed.includes("viewbox")) {
-		const widthMatch = processed.match(/width=["']?(\d+(?:\.\d+)?)px?["']?/i);
-		const heightMatch = processed.match(/height=["']?(\d+(?:\.\d+)?)px?["']?/i);
+	const svgTagMatch = processed.match(/<svg\b[^>]*>/i);
+	if (svgTagMatch && !/\bviewBox\s*=/i.test(svgTagMatch[0])) {
+		const widthMatch = svgTagMatch[0].match(/\bwidth=["']?(\d+(?:\.\d+)?)(?:px)?["']?/i);
+		const heightMatch = svgTagMatch[0].match(/\bheight=["']?(\d+(?:\.\d+)?)(?:px)?["']?/i);
 		if (widthMatch && heightMatch) {
 			processed = processed.replace(/<svg\b/i, `<svg viewBox="0 0 ${widthMatch[1]} ${heightMatch[1]}"`);
 		}
@@ -83,15 +88,15 @@ export function resolveVaultSvgFile(app: App, rawPathOrLink: string, sourcePath 
 	if (!clean) return null;
 
 	const direct = app.vault.getAbstractFileByPath(clean);
-	if (direct instanceof TFile) return direct;
+	if (isTFile(direct)) return direct;
 
 	if (sourcePath) {
 		const linked = app.metadataCache.getFirstLinkpathDest(clean, sourcePath);
-		if (linked instanceof TFile) return linked;
+		if (isTFile(linked)) return linked;
 	}
 
 	const globalLinked = app.metadataCache.getFirstLinkpathDest(clean, "");
-	if (globalLinked instanceof TFile) return globalLinked;
+	if (isTFile(globalLinked)) return globalLinked;
 
 	const cleanLower = clean.toLowerCase();
 	const filenameLower = (cleanLower.split("/").pop() || "").toLowerCase();
@@ -115,7 +120,7 @@ export function resolveVaultSvgFile(app: App, rawPathOrLink: string, sourcePath 
 }
 
 export async function readVaultSvgFile(app: App, fileOrPath: TFile | string, sourcePath = ""): Promise<{ content: string; path: string; file: TFile | null }> {
-	if (fileOrPath instanceof TFile) {
+	if (typeof fileOrPath !== "string" && isTFile(fileOrPath)) {
 		try {
 			if (await app.vault.adapter.exists(fileOrPath.path)) {
 				return { content: await app.vault.adapter.read(fileOrPath.path), path: fileOrPath.path, file: fileOrPath };
@@ -126,7 +131,7 @@ export async function readVaultSvgFile(app: App, fileOrPath: TFile | string, sou
 		}
 	}
 
-	const clean = sanitizeSvgLinkPath(fileOrPath);
+	const clean = sanitizeSvgLinkPath(typeof fileOrPath === "string" ? fileOrPath : "");
 	const resolved = resolveVaultSvgFile(app, clean, sourcePath);
 	if (resolved) {
 		try {
@@ -160,7 +165,7 @@ export async function writeVaultSvgFile(
 	const file = resolveVaultSvgFile(app, clean, sourcePath);
 	const targetPath = file ? file.path : clean;
 
-	if (file instanceof TFile) {
+	if (isTFile(file)) {
 		try {
 			await app.vault.modify(file, content);
 			return { ok: true, resolvedPath: file.path };

@@ -1412,53 +1412,17 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			const sourcePath = activeView?.file?.path || this.app.workspace.getActiveFile()?.path || "";
 
 			for (const rawCand of rawCandidates) {
-				const clean = rawCand.replace(/^\[\[/, "").replace(/\]\]$/, "").split("|")[0].trim();
+				const clean = sanitizeSvgLinkPath(rawCand);
 				if (!clean) continue;
 
-				if (sourcePath) {
-					file = this.app.metadataCache.getFirstLinkpathDest(clean, sourcePath);
-				}
-				if (!file) {
-					file = this.app.metadataCache.getFirstLinkpathDest(clean, "");
-				}
-				if (!file) {
-					file = this.app.vault.getAbstractFileByPath(clean) as TFile | null;
-				}
-				if (!file) {
-					const allFiles = this.app.vault.getFiles();
-					const cleanLower = clean.toLowerCase();
-					file = allFiles.find((f) =>
-						f.path.toLowerCase() === cleanLower ||
-						f.name.toLowerCase() === cleanLower ||
-						f.path.toLowerCase().endsWith("/" + cleanLower) ||
-						(cleanLower.endsWith(".svg") && f.name.toLowerCase().endsWith(cleanLower)) ||
-						(filenameFromSrc && f.name.toLowerCase() === filenameFromSrc.toLowerCase())
-					) || null;
-				}
-				if (file && file.extension === "svg") {
-					try {
-						if (await this.app.vault.adapter.exists(file.path)) {
-							rawSvgContent = await this.app.vault.adapter.read(file.path);
-						} else {
-							rawSvgContent = await this.app.vault.read(file);
-						}
-						relPath = file.path;
-						title = i18n.modalTitleNamed(file.name);
-						break;
-					} catch {}
-				}
-
-				// Direct vault adapter read (bypasses unindexed cache!)
-				if (!rawSvgContent) {
-					try {
-						const exists = await this.app.vault.adapter.exists(clean);
-						if (exists) {
-							rawSvgContent = await this.app.vault.adapter.read(clean);
-							relPath = clean;
-							title = i18n.modalTitleNamed(clean.split("/").pop() || "SVG");
-							break;
-						}
-					} catch {}
+				const readRes = await readVaultSvgFile(this.app, clean, sourcePath);
+				if (readRes.content) {
+					rawSvgContent = readRes.content;
+					relPath = readRes.path;
+					file = readRes.file;
+					const displayName = file?.name || relPath.split("/").pop() || "SVG";
+					title = i18n.modalTitleNamed(displayName);
+					break;
 				}
 			}
 		}
@@ -1469,18 +1433,16 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 				? target
 				: (target.closest("svg") ?? target.querySelector("svg"));
 			if (candidateSvg && isDiagramSvg(candidateSvg)) {
-				const svgPath = candidateSvg.getAttribute(SVG_PATH_ATTR);
+				const svgPath = candidateSvg.getAttribute(SVG_PATH_ATTR) || candidateSvg.closest(`[${SVG_PATH_ATTR}]`)?.getAttribute(SVG_PATH_ATTR) || "";
 				if (svgPath) {
-					const f = this.app.vault.getAbstractFileByPath(svgPath);
-					if (f instanceof TFile) file = f;
-					relPath = svgPath;
-					try {
-						if (await this.app.vault.adapter.exists(svgPath)) {
-							rawSvgContent = await this.app.vault.adapter.read(svgPath);
-						} else if (file) {
-							rawSvgContent = await this.app.vault.read(file);
-						}
-					} catch {}
+					const readRes = await readVaultSvgFile(this.app, svgPath);
+					if (readRes.content) {
+						rawSvgContent = readRes.content;
+						relPath = readRes.path;
+						file = readRes.file;
+					} else {
+						relPath = sanitizeSvgLinkPath(svgPath);
+					}
 				}
 				if (!rawSvgContent) {
 					rawSvgContent = serializeSvg(candidateSvg);
@@ -1498,68 +1460,26 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 	}
 
 	public async openSvgEditorByPathOrLink(linkPath: string): Promise<void> {
-		const clean = linkPath.replace(/^\[\[/, "").replace(/\]\]$/, "").split("|")[0].trim();
+		const clean = sanitizeSvgLinkPath(linkPath);
 		if (!clean) return;
 		const i18n = getLocaleStrings();
 		const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
 		const sourcePath = activeView?.file?.path || this.app.workspace.getActiveFile()?.path || "";
 
-		let file: TFile | null = null;
-		if (sourcePath) file = this.app.metadataCache.getFirstLinkpathDest(clean, sourcePath);
-		if (!file) file = this.app.metadataCache.getFirstLinkpathDest(clean, "");
-		if (!file) file = this.app.vault.getAbstractFileByPath(clean) as TFile | null;
-		if (!file) {
-			const cleanLower = clean.toLowerCase();
-			file = this.app.vault.getFiles().find((f) =>
-				f.path.toLowerCase() === cleanLower ||
-				f.name.toLowerCase() === cleanLower ||
-				f.path.toLowerCase().endsWith("/" + cleanLower)
-			) || null;
-		}
-
-		let rawSvgContent = "";
-		let relPath = file ? file.path : clean;
-		if (file) {
-			try {
-				rawSvgContent = await this.app.vault.read(file);
-			} catch {}
-		}
-		if (!rawSvgContent) {
-			try {
-				if (await this.app.vault.adapter.exists(clean)) {
-					rawSvgContent = await this.app.vault.adapter.read(clean);
-					relPath = clean;
-				}
-			} catch {}
-		}
-
+		const { content: rawSvgContent, path: relPath, file } = await readVaultSvgFile(this.app, clean, sourcePath);
 		if (!rawSvgContent) {
 			new Notice(i18n.noticeCannotParse);
 			return;
 		}
 
-		const name = file ? file.name : (clean.split("/").pop() || "SVG");
+		const name = file ? file.name : (relPath.split("/").pop() || "SVG");
 		this.renderModalWithContent(rawSvgContent, relPath, i18n.modalTitleNamed(name));
 	}
 
 	private renderModalWithContent(rawSvgContent: string, relPath: string, title: string): void {
 		const i18n = getLocaleStrings();
-
-		// Auto-inject viewBox if missing
-		if (!rawSvgContent.includes("viewBox") && !rawSvgContent.includes("viewbox")) {
-			const widthMatch = rawSvgContent.match(/width=["']?(\d+(?:\.\d+)?)px?["']?/i);
-			const heightMatch = rawSvgContent.match(/height=["']?(\d+(?:\.\d+)?)px?["']?/i);
-			if (widthMatch && heightMatch) {
-				const w = widthMatch[1];
-				const h = heightMatch[1];
-				rawSvgContent = rawSvgContent.replace(/<svg\b/i, `<svg viewBox="0 0 ${w} ${h}"`);
-			}
-		}
-
-		// Stamp SVG_PATH_ATTR if path exists
-		if (relPath) {
-			rawSvgContent = rawSvgContent.replace(/<svg\b/i, `<svg ${SVG_PATH_ATTR}="${relPath}"`);
-		}
+		const cleanRelPath = sanitizeSvgLinkPath(relPath);
+		const preparedMarkup = prepareSvgMarkup(rawSvgContent, cleanRelPath || undefined);
 
 		// Create Modal DOM
 		const backdrop = document.createElement("div");
@@ -1731,11 +1651,14 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 		const body = document.createElement("div");
 		body.className = "a1-svg-modal-body";
+		if (cleanRelPath) {
+			body.setAttribute(SVG_PATH_ATTR, cleanRelPath);
+		}
 
 		try {
-			const parsed = new DOMParser().parseFromString(rawSvgContent, "image/svg+xml");
+			const parsed = new DOMParser().parseFromString(preparedMarkup, "image/svg+xml");
 			const rootSvg = parsed.documentElement;
-			if (rootSvg) {
+			if (rootSvg && rootSvg.tagName.toLowerCase() !== "parsererror" && !rootSvg.querySelector("parsererror")) {
 				const adopted = document.adoptNode ? document.adoptNode(rootSvg) : rootSvg;
 				body.appendChild(adopted);
 			}
@@ -1745,10 +1668,13 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 		const modalSvg = body.querySelector("svg") as SVGSVGElement | null;
 		if (modalSvg) {
+			if (cleanRelPath) {
+				modalSvg.setAttribute(SVG_PATH_ATTR, cleanRelPath);
+			}
 			this.history.setActiveSvg(modalSvg);
 		}
 
-		this.currentModalPath = relPath;
+		this.currentModalPath = cleanRelPath;
 		this.currentModalTitle = title;
 		this.currentModalBody = body;
 		this.currentModalSvg = modalSvg;
@@ -1759,6 +1685,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 		let isConfirming = false;
 		const closeModal = () => {
+			this.cancelActiveOverlay();
 			this.clearHover();
 			backdrop.remove();
 			if (this.activeModal === backdrop) this.activeModal = null;
@@ -1771,15 +1698,21 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 		const requestClose = () => {
 			if (isConfirming) return;
+			this.commitActiveOverlay();
 			this.clearHover();
 			if (modalSvg && this.history.isDirty(modalSvg)) {
 				isConfirming = true;
 				this.promptSaveConfirmation(
 					async () => {
 						isConfirming = false;
-						await this.persistSvg(modalSvg);
-						this.history.markSaved(modalSvg);
-						closeModal();
+						const ok = await this.persistSvg(modalSvg);
+						if (ok) {
+							this.history.markSaved(modalSvg);
+							closeModal();
+						} else {
+							new Notice(getLocaleStrings().noticeSaveFailed);
+							dialog.focus();
+						}
 					},
 					() => {
 						isConfirming = false;
@@ -1937,60 +1870,15 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 	}
 
 	public isFluentTasksInstalled(): boolean {
-		const plugins = (this.app as any).plugins;
-		if (!plugins) return false;
-		return !!(
-			plugins.plugins?.["fluent-tasks"] ||
-			plugins.enabledPlugins?.has?.("fluent-tasks")
-		);
+		return isFluentTasksInstalled(this.app);
 	}
 
 	public isTodoDataSvg(targetPath: string): boolean {
-		if (!targetPath) return false;
-		const clean = targetPath.replace(/\\/g, "/").toLowerCase();
-		return clean.startsWith("tododata/") || clean.includes("/tododata/") || clean === "tododata";
+		return isTodoDataSvg(targetPath);
 	}
 
 	public async getLinkedTasksInfo(targetPath: string): Promise<{ count: number; titles: string[] }> {
-		if (!targetPath) return { count: 0, titles: [] };
-		const cleanTarget = targetPath.replace(/\\/g, "/").trim();
-		const filename = cleanTarget.split("/").pop() || "";
-		if (!filename) return { count: 0, titles: [] };
-
-		const titles: string[] = [];
-		try {
-			const files = this.app.vault.getFiles();
-			const todoFiles = files.filter(f => f.extension === "md" && (f.path.startsWith("TodoData/") || f.path.includes("TodoData")));
-			for (const file of todoFiles) {
-				const content = await this.app.vault.read(file);
-				if (!content.includes("%%{") || !content.includes("svgs")) continue;
-				const lines = content.split("\n");
-				for (const line of lines) {
-					const match = line.match(/%%(\{.*?\})%%/);
-					if (!match) continue;
-					try {
-						const meta = JSON.parse(match[1]);
-						if (Array.isArray(meta.svgs) && meta.svgs.length > 0) {
-							const isLinked = meta.svgs.some((s: string) => {
-								if (typeof s !== "string") return false;
-								const clean = s.replace(/\\/g, "/").replace(/^\[\[/, "").replace(/\]\]$/, "").split("|")[0].trim();
-								return clean === cleanTarget ||
-									clean.endsWith("/" + filename) ||
-									cleanTarget.endsWith("/" + clean) ||
-									clean.split("/").pop() === filename;
-							});
-							if (isLinked) {
-								const rawTitle = line.replace(/^- \[([ x])\]\s*/, "").replace(/\s*%%\{.*?\}%%/, "").trim();
-								titles.push(rawTitle || "Untitled task");
-							}
-						}
-					} catch {}
-				}
-			}
-		} catch (err) {
-			console.error("Failed to detect linked tasks:", err);
-		}
-		return { count: titles.length, titles };
+		return getLinkedTasksInfo(this.app, targetPath);
 	}
 
 	public promptDeleteActiveSvg(): void {
@@ -2137,14 +2025,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		// 1. Delete physical file from vault
 		if (targetPath) {
 			try {
-				let file = this.app.vault.getAbstractFileByPath(targetPath) as TFile | null;
-				if (!file) {
-					file = this.app.metadataCache.getFirstLinkpathDest(targetPath, "");
-				}
-				if (!file) {
-					const clean = targetPath.split("/").pop() || "";
-					file = this.app.vault.getFiles().find(f => f.name === clean || f.path.endsWith("/" + clean)) || null;
-				}
+				const file = resolveVaultSvgFile(this.app, targetPath);
 				if (file) {
 					await this.app.vault.trash(file, true);
 				} else if (await this.app.vault.adapter.exists(targetPath)) {
@@ -2190,114 +2071,11 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 	}
 
 	public async cleanupSvgEmbedsInNotes(targetPath: string): Promise<void> {
-		if (!targetPath) return;
-		const cleanTarget = targetPath.replace(/\\/g, "/").trim();
-		const filename = cleanTarget.split("/").pop() || "";
-		if (!filename) return;
-
-		const escapedName = filename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-		const embedRegexes = [
-			new RegExp(`!?\\[\\[(?:[^\\]]*\\/)?${escapedName}(?:\\|[^\\]]*)?\\]\\]`, "gi"),
-			new RegExp(`!?\\[[^\\]]*\\]\\([^)]*${escapedName}[^)]*\\)`, "gi"),
-		];
-
-		try {
-			const files = this.app.vault.getFiles().filter(f => f.extension === "md");
-			for (const file of files) {
-				const content = await this.app.vault.read(file);
-				if (!content.includes(filename)) continue;
-
-				let modified = false;
-				const lines = content.split("\n");
-				const newLines: string[] = [];
-
-				for (let i = 0; i < lines.length; i++) {
-					const line = lines[i];
-					let isPureEmbed = false;
-					for (const rx of embedRegexes) {
-						rx.lastIndex = 0;
-						const match = rx.exec(line.trim());
-						if (match && match[0] === line.trim()) {
-							isPureEmbed = true;
-							break;
-						}
-					}
-
-					if (isPureEmbed) {
-						modified = true;
-						continue;
-					}
-
-					let newLine = line;
-					for (const rx of embedRegexes) {
-						rx.lastIndex = 0;
-						if (rx.test(newLine)) {
-							newLine = newLine.replace(rx, "").trimEnd();
-							modified = true;
-						}
-					}
-					newLines.push(newLine);
-				}
-
-				if (modified) {
-					await this.app.vault.modify(file, newLines.join("\n"));
-				}
-			}
-		} catch (err) {
-			console.error("Failed to clean up SVG embeds in notes:", err);
-		}
+		await cleanupSvgEmbedsInNotes(this.app, targetPath);
 	}
 
 	public async cleanupFluentTasksSvgLinks(targetPath: string): Promise<void> {
-		if (!targetPath) return;
-		const cleanTarget = targetPath.replace(/\\/g, "/").trim();
-		const filename = cleanTarget.split("/").pop() || "";
-		if (!filename) return;
-
-		try {
-			const files = this.app.vault.getFiles();
-			const todoFiles = files.filter(f => f.extension === "md" && (f.path.startsWith("TodoData/") || f.path.includes("TodoData")));
-			for (const file of todoFiles) {
-				const content = await this.app.vault.read(file);
-				if (!content.includes("%%{") || !content.includes("svgs")) continue;
-
-				let modified = false;
-				const newLines = content.split("\n").map(line => {
-					const match = line.match(/%%(\{.*?\})%%/);
-					if (!match) return line;
-					try {
-						const meta = JSON.parse(match[1]);
-						if (Array.isArray(meta.svgs) && meta.svgs.length > 0) {
-							const originalLen = meta.svgs.length;
-							const remaining = meta.svgs.filter((s: string) => {
-								if (typeof s !== "string") return false;
-								const clean = s.replace(/\\/g, "/").trim();
-								if (clean === cleanTarget) return false;
-								if (clean.endsWith("/" + filename) || cleanTarget.endsWith("/" + clean)) return false;
-								if (clean.split("/").pop() === filename) return false;
-								return true;
-							});
-							if (remaining.length !== originalLen) {
-								modified = true;
-								if (remaining.length > 0) {
-									meta.svgs = remaining;
-								} else {
-									delete meta.svgs;
-								}
-								return line.replace(/%%\{.*?\}%%/, `%%${JSON.stringify(meta)}%%`);
-							}
-						}
-					} catch {}
-					return line;
-				});
-
-				if (modified) {
-					await this.app.vault.modify(file, newLines.join("\n"));
-				}
-			}
-		} catch (err) {
-			console.error("Failed to clean up fluent-tasks SVG links:", err);
-		}
+		await cleanupFluentTasksSvgLinks(this.app, targetPath);
 	}
 }
 
