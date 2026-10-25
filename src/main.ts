@@ -3,11 +3,26 @@ import { adaptAllTextBackgrounds, adaptBackgroundToText, asText, cloneCard, comm
 import { openTextOverlay, type OverlayHandle } from "./editorOverlay";
 import { resolveEffectiveEditorColors } from "./svgTheme";
 import { ensureMarker, matchSpan, spliceSvg } from "./svgSource";
-import { SvgHistoryManager } from "./svgHistory";
+import { cleanSvgHtml, replaceSvgChildrenFromMarkup, SvgHistoryManager } from "./svgHistory";
+import { getLocaleStrings, isChineseLocale } from "./i18n";
+import {
+	MARK,
+	SVG_PATH_ATTR,
+	cleanupFluentTasksSvgLinks,
+	cleanupSvgEmbedsInNotes,
+	getLinkedTasksInfo,
+	isDiagramSvg,
+	isFluentTasksInstalled,
+	isTodoDataSvg,
+	prepareSvgMarkup,
+	readVaultSvgFile,
+	resolveVaultSvgFile,
+	sanitizeSvgLinkPath,
+	writeVaultSvgFile,
+} from "./svgVaultUtils";
 import "./styles.css";
 
-const MARK = "data-a1-svg";
-const SVG_PATH_ATTR = "data-a1-svg-path";
+export { getLocaleStrings, isDiagramSvg };
 
 interface A1SvgQuickEditorSettings {
 	openEditorHotkey: string; // e.g. "Ctrl+Shift+Alt+I"
@@ -20,158 +35,6 @@ const DEFAULT_SETTINGS: A1SvgQuickEditorSettings = {
 	deleteSvgHotkey: "Ctrl+Delete",
 	smartLayoutHotkey: "Ctrl+Shift+S",
 };
-
-export function isDiagramSvg(el: Element | null): el is SVGSVGElement {
-	if (!el) return false;
-	const hasInstanceOf = "instanceOf" in el && typeof (el as { instanceOf?: (cls: unknown) => boolean }).instanceOf === "function";
-	const isSvg = (hasInstanceOf ? (el as { instanceOf: (cls: unknown) => boolean }).instanceOf(SVGSVGElement) : false) || (el.localName || el.tagName.toLowerCase()).endsWith("svg");
-	if (!isSvg) return false;
-
-	// Ignore toolbar icons, zoom buttons, close buttons, nav actions
-	if (el.closest("button, .oit-floating-zoom-btn, .clickable-icon, .svg-lightbox-header, .a1-svg-modal-header, .nav-action-button, [class*='overlay'], [class*='toolbar'], .workspace-tab-header, .view-header")) {
-		return false;
-	}
-
-	const cls = (el.getAttribute("class") || "").toLowerCase();
-	if (cls.includes("svg-icon") || cls.includes("lucide") || cls.includes("oit-") || cls.includes("zoom") || cls.includes("icon")) {
-		return false;
-	}
-
-	// Tiny icons with no text are never diagram SVGs
-	const w = parseFloat(el.getAttribute("width") || "0");
-	const h = parseFloat(el.getAttribute("height") || "0");
-	const vb = (el.getAttribute("viewBox") || el.getAttribute("viewbox") || "").trim().split(/[\s,]+/);
-	const vbw = vb.length === 4 ? parseFloat(vb[2]) : 0;
-	const vbh = vb.length === 4 ? parseFloat(vb[3]) : 0;
-
-	if (((w > 0 && w <= 64 && h > 0 && h <= 64) || (vbw > 0 && vbw <= 64 && vbh > 0 && vbh <= 64)) && el.querySelectorAll("text").length === 0) {
-		return false;
-	}
-
-	if (el.querySelectorAll("text").length === 0 && (w <= 64 || vbw <= 64)) {
-		return false;
-	}
-
-	return true;
-}
-
-export function getLocaleStrings() {
-	let lang = "en";
-	try {
-		if (typeof window !== "undefined" && window.localStorage) {
-			lang = (window.localStorage.getItem("language") || "en").toLowerCase();
-		}
-	} catch {
-		lang = "en";
-	}
-	const isZh = lang.startsWith("zh");
-
-	if (isZh) {
-		return {
-			modalTitleDefault: "SVG 图像编辑器",
-			modalTitleNamed: (name: string) => `SVG 图像编辑器 — ${name}`,
-			badgeEdit: "Ctrl+S 保存",
-			badgeSave: "Ctrl+S 保存",
-			badgeDelete: "清空文字即删UI框",
-			badgeMove: "Shift + 拖拽移动UI框",
-			badgeClone: "Alt + 拖拽复制UI框",
-			badgeUndoRedo: "Ctrl+Z/Y 撤销重做",
-			btnAutoAlign: "Auto Align",
-			btnAutoAlignTip: "拖动时，在很小的范围内自动对齐上下左右。小框约 5mm，大框约 2mm。",
-			btnSmartLayout: "智能排版",
-			btnSmartLayoutTip: "智能排版：删除部分UI卡片后自动居中并均匀分布剩余卡片与间隙 (Ctrl+Z 可撤销)",
-			noticeSmartLayoutApplied: "已完成智能排版 (Ctrl+Z 可撤销)",
-			noticeSmartLayoutNoChange: "当前布局已居中平衡，无需调整",
-			badgeAutoSave: "退出确认保存",
-			closeTooltip: "关闭 (Esc)",
-			noticeSaved: (name: string) => `SVG 已保存: ${name}`,
-			noticeSvgUpdated: (name: string) => `SVG 已自动检测到磁盘修改并重新加载: ${name}`,
-			noticeUndo: "已撤销",
-			noticeRedo: "已重做",
-			confirmSaveTitle: "是否保存？",
-			confirmSaveDesc: "当前 SVG 图像已有改动，退出前是否保存更改？",
-			btnSave: "保存 (Enter)",
-			btnDiscard: "不保存 / 放弃",
-			btnCancel: "继续编辑 (Esc)",
-			openInTab: "在新标签页打开",
-			noticeHoverSvgPrompt: "请将鼠标悬浮在笔记中的 SVG 图片上方",
-			noticeHoverTextPrompt: "请将鼠标悬浮在 SVG 卡片、文字或图片上方",
-			noticeCannotParse: "未能解析出有效的 SVG 数据",
-			btnDeleteSvg: "删除 SVG",
-			btnDeleteSvgTip: "永久删除此 SVG 图像文件并清理任务关联链接 (Enter 确认)",
-			settingTabTitle: "A1 SVG Quick Editor 设置",
-			settingHotkeyName: "打开 SVG 图像编辑器快捷键",
-			settingHotkeyDesc: "当鼠标停留在笔记中的 SVG 图片上时按下此快捷键，打开全屏交互式 SVG 编辑器弹窗。默认：Ctrl+Shift+Alt+I。在输入框中可直接按下想要录制的快捷键。",
-			settingResetTooltip: "恢复默认快捷键 (Ctrl+Shift+Alt+I)",
-			settingUpdatedNotice: (hk: string) => `SVG 编辑快捷键已更新为: ${hk}`,
-			settingResetNotice: "已恢复默认快捷键: Ctrl+Shift+Alt+I",
-			settingDeleteHotkeyName: "删除当前 SVG 快捷键",
-			settingDeleteHotkeyDesc: "在 SVG 编辑弹窗中按下此快捷键可触发删除确认弹窗。默认：Ctrl+Delete。在输入框中可直接按下想要录制的快捷键。",
-			settingDeleteResetTooltip: "恢复默认删除快捷键 (Ctrl+Delete)",
-			settingDeleteUpdatedNotice: (hk: string) => `删除 SVG 快捷键已更新为: ${hk}`,
-			settingDeleteResetNotice: "已恢复默认删除快捷键: Ctrl+Delete",
-			settingSmartLayoutHotkeyName: "智能排版快捷键",
-			settingSmartLayoutHotkeyDesc: "在 SVG 编辑弹窗中按下此快捷键可触发智能排版（自动居中并均匀分布卡片间隙）。默认：Ctrl+Shift+S。在输入框中可直接按下想要录制的快捷键。",
-			settingSmartLayoutResetTooltip: "恢复默认智能排版快捷键 (Ctrl+Shift+S)",
-			settingSmartLayoutUpdatedNotice: (hk: string) => `智能排版快捷键已更新为: ${hk}`,
-			settingSmartLayoutResetNotice: "已恢复默认智能排版快捷键: Ctrl+Shift+S",
-			noticeDeleted: (name: string) => `SVG 已删除并解绑任务: ${name}`,
-			noticeDeletedNoLink: (name: string) => `SVG 已删除: ${name}`,
-		};
-	}
-
-	return {
-		modalTitleDefault: "SVG Image Editor",
-		modalTitleNamed: (name: string) => `SVG Image Editor — ${name}`,
-		badgeEdit: "Ctrl+S to Save",
-		badgeSave: "Ctrl+S to Save",
-		badgeDelete: "Clear Text to Delete Box",
-		badgeMove: "Shift + Drag to Move",
-		badgeClone: "Alt + Drag to Duplicate",
-		badgeUndoRedo: "Ctrl+Z/Y Undo/Redo",
-		btnAutoAlign: "Auto Align",
-		btnAutoAlignTip: "While dragging, lock edges and centers that come within a few millimetres. Small boxes ~5mm, large cards ~2mm.",
-		btnSmartLayout: "Smart Layout",
-		btnSmartLayoutTip: "Smart Layout: auto-center and evenly balance remaining cards and gaps (Ctrl+Z to undo)",
-		noticeSmartLayoutApplied: "Smart layout applied (Ctrl+Z to undo)",
-		noticeSmartLayoutNoChange: "Layout is already balanced",
-		badgeAutoSave: "Save on Exit",
-		closeTooltip: "Close (Esc)",
-		noticeSaved: (name: string) => `SVG saved: ${name}`,
-		noticeSvgUpdated: (name: string) => `SVG reloaded from disk: ${name}`,
-		noticeUndo: "Undone",
-		noticeRedo: "Redone",
-		confirmSaveTitle: "Save changes?",
-		confirmSaveDesc: "The SVG image has been modified. Do you want to save changes before exiting?",
-		btnSave: "Save (Enter)",
-		btnDiscard: "Don't Save",
-		btnCancel: "Keep Editing (Esc)",
-		openInTab: "Open in Tab",
-		noticeHoverSvgPrompt: "Please hover cursor over an SVG image in the note",
-		noticeHoverTextPrompt: "Please hover cursor over an SVG card, text, or image",
-		noticeCannotParse: "Failed to resolve valid SVG data",
-		btnDeleteSvg: "Delete SVG",
-		btnDeleteSvgTip: "Permanently delete this SVG file and unlink from tasks (Enter to confirm)",
-		settingTabTitle: "A1 SVG Quick Editor Settings",
-		settingHotkeyName: "Open SVG Image Editor Hotkey",
-		settingHotkeyDesc: "Press this hotkey while hovering over an SVG image in any note to open the interactive SVG editor. Default: Ctrl+Shift+Alt+I. Type directly in the input box to record your hotkey.",
-		settingResetTooltip: "Reset to default hotkey (Ctrl+Shift+Alt+I)",
-		settingUpdatedNotice: (hk: string) => `SVG editor hotkey updated to: ${hk}`,
-		settingResetNotice: "Reset to default hotkey: Ctrl+Shift+Alt+I",
-		settingDeleteHotkeyName: "Delete Active SVG Hotkey",
-		settingDeleteHotkeyDesc: "Press this hotkey while in the SVG editor to trigger the delete confirmation prompt. Default: Ctrl+Delete. Type directly in the input box to record your hotkey.",
-		settingDeleteResetTooltip: "Reset to default delete hotkey (Ctrl+Delete)",
-		settingDeleteUpdatedNotice: (hk: string) => `Delete SVG hotkey updated to: ${hk}`,
-		settingDeleteResetNotice: "Reset to default delete hotkey: Ctrl+Delete",
-		settingSmartLayoutHotkeyName: "Smart Layout Hotkey",
-		settingSmartLayoutHotkeyDesc: "Press this hotkey while in the SVG editor to trigger smart layout (auto-center and balance cards & gaps). Default: Ctrl+Shift+S. Type directly in the input box to record your hotkey.",
-		settingSmartLayoutResetTooltip: "Reset to default smart layout hotkey (Ctrl+Shift+S)",
-		settingSmartLayoutUpdatedNotice: (hk: string) => `Smart layout hotkey updated to: ${hk}`,
-		settingSmartLayoutResetNotice: "Reset to default smart layout hotkey: Ctrl+Shift+S",
-		noticeDeleted: (name: string) => `Deleted SVG and unlinked: ${name}`,
-		noticeDeletedNoLink: (name: string) => `Deleted SVG: ${name}`,
-	};
-}
 
 export default class A1SvgQuickEditorPlugin extends Plugin {
 	settings: A1SvgQuickEditorSettings = DEFAULT_SETTINGS;
@@ -200,6 +63,41 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 	private currentModalSvg: SVGSVGElement | null = null;
 	private toastTimer: any = null;
 	private activeToastEl: HTMLElement | null = null;
+	private lastSelfSave: { path: string; timestamp: number; content: string } | null = null;
+
+	public commitActiveOverlay(): void {
+		if (this.overlay) {
+			this.overlay.commit();
+			this.overlay = null;
+		}
+	}
+
+	public cancelActiveOverlay(): void {
+		if (this.overlay) {
+			this.overlay.cancel();
+			this.overlay = null;
+		}
+	}
+
+	public isRecentSelfSave(filePath: string, diskContent?: string): boolean {
+		if (!this.lastSelfSave || !filePath) return false;
+		const cleanTarget = sanitizeSvgLinkPath(filePath).toLowerCase();
+		const cleanSaved = sanitizeSvgLinkPath(this.lastSelfSave.path).toLowerCase();
+		const targetBase = cleanTarget.split("/").pop() || "";
+		const savedBase = cleanSaved.split("/").pop() || "";
+		const pathMatches = cleanTarget === cleanSaved || (targetBase !== "" && targetBase === savedBase);
+		if (!pathMatches) return false;
+
+		if (Date.now() - this.lastSelfSave.timestamp < 2500) {
+			return true;
+		}
+		if (diskContent) {
+			const normDisk = diskContent.replace(/\s+/g, " ").trim();
+			const normSaved = this.lastSelfSave.content.replace(/\s+/g, " ").trim();
+			if (normDisk === normSaved) return true;
+		}
+		return false;
+	}
 
 	public showSaveToast(message?: string): void {
 		const text = message || getLocaleStrings().noticeSaved("SVG");
@@ -270,13 +168,16 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 	}
 
 	public smartLayout(targetSvg?: SVGSVGElement | null): boolean {
+		this.commitActiveOverlay();
 		const svg = targetSvg ?? this.currentModalSvg ?? (document.querySelector(".a1-svg-modal-body svg, .svg-lightbox-content svg") as SVGSVGElement | null);
 		if (!svg) return false;
-		this.history.recordSnapshot(svg);
+		this.clearHover();
+		this.history.setActiveSvg(svg);
+		const preLayoutSnapshot = cleanSvgHtml(svg.innerHTML);
 		const res = smartAutoLayout(svg);
 		const i18n = getLocaleStrings();
 		if (res.changed) {
-			this.history.markDirty(svg);
+			this.history.recordExplicitSnapshot(svg, preLayoutSnapshot);
 			this.showSaveToast(i18n.noticeSmartLayoutApplied);
 			return true;
 		} else {
@@ -295,20 +196,18 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on("modify", async (file) => {
 				if (file instanceof TFile && file.extension === "svg") {
+					if (this.isRecentSelfSave(file.path)) {
+						return;
+					}
 					window.dispatchEvent(new CustomEvent("a1-svg-updated", {
-						detail: { path: file.path, name: file.name }
+						detail: { path: file.path, name: file.name, source: "vault-modify" }
 					}));
 					this.refreshImgEmbeds(file.path);
 					if (this.currentModalPath && (this.currentModalPath === file.path || this.currentModalPath.endsWith(file.name))) {
 						if (this.currentModalSvg && !this.history.isDirty(this.currentModalSvg)) {
 							try {
-								let diskContent = "";
-								if (await this.app.vault.adapter.exists(file.path)) {
-									diskContent = await this.app.vault.adapter.read(file.path);
-								} else {
-									diskContent = await this.app.vault.read(file);
-								}
-								if (diskContent) {
+								const { content: diskContent } = await readVaultSvgFile(this.app, file);
+								if (diskContent && !this.isRecentSelfSave(file.path, diskContent)) {
 									this.hotReloadModal(diskContent);
 								}
 							} catch (e) {
@@ -579,6 +478,28 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 	}
 
 	private onKeyDown(evt: KeyboardEvent): void {
+		// Do not intercept keys when a confirmation dialog is open
+		if (document.querySelector(".a1-svg-confirm-overlay, .svg-confirm-backdrop")) {
+			return;
+		}
+
+		// When text input overlay is open, only intercept Ctrl+S / Cmd+S to commit & save; let all other keys pass to the input
+		if (this.overlay) {
+			if ((evt.ctrlKey || evt.metaKey) && !evt.altKey && !evt.shiftKey && (evt.key === "s" || evt.key === "S")) {
+				const activeSvg = this.history.getActiveSvg() ??
+					this.currentModalSvg ??
+					(document.querySelector(".a1-svg-modal-body svg, .svg-lightbox-content svg") as SVGSVGElement | null);
+				if (activeSvg) {
+					evt.preventDefault();
+					evt.stopPropagation();
+					evt.stopImmediatePropagation();
+					this.commitActiveOverlay();
+					void this.saveCurrentSvg(activeSvg, true);
+				}
+			}
+			return;
+		}
+
 		// 1. Hotkey check: Open SVG Image Editor or start text edit (default, custom setting, or Obsidian bound hotkey)
 		if (this.isSvgEditHotkey(evt)) {
 			evt.preventDefault();
@@ -590,7 +511,6 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 		// 2. F2 text editing check: Stop immediate propagation so Obsidian NEVER renames the note!
 		if (evt.key === "F2" && !evt.repeat && !evt.altKey && !evt.metaKey && !evt.ctrlKey) {
-			if (this.overlay) return;
 			const el = (this.lastPointerX > 0 || this.lastPointerY > 0)
 				? document.elementFromPoint(this.lastPointerX, this.lastPointerY)
 				: null;
@@ -635,8 +555,8 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			}
 		}
 
-		// 4. Undo (Ctrl+Z) and Redo (Ctrl+Y / Ctrl+Shift+Z)
-		if ((evt.ctrlKey || evt.metaKey) && !evt.altKey && !this.overlay) {
+		// 5. Undo (Ctrl+Z) and Redo (Ctrl+Y / Ctrl+Shift+Z)
+		if ((evt.ctrlKey || evt.metaKey) && !evt.altKey) {
 			const activeSvg = this.history.getActiveSvg();
 			if (activeSvg) {
 				if (evt.key === "z" || evt.key === "Z") {
@@ -660,7 +580,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			}
 		}
 
-		// 5. Delete key: Directly delete hovered UI box/card element
+		// 6. Delete key: Directly delete hovered UI box/card element
 		if ((evt.key === "Delete" || evt.code === "Delete") && !evt.repeat && !evt.altKey && !evt.metaKey && !evt.ctrlKey && !evt.shiftKey) {
 			if (this.deleteHoveredBox()) {
 				evt.preventDefault();
@@ -687,17 +607,17 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		const delTarget = resolveDeleteTarget(candidate, this.lastPointerX, this.lastPointerY);
 		if (!delTarget || !this.isInteractiveSvg(delTarget.svg)) return false;
 
-		this.history.recordSnapshot(delTarget.svg);
-		delTarget.element.remove();
 		this.clearHover();
 		this.clearHoveredSvgTarget();
+		this.history.recordSnapshot(delTarget.svg);
+		delTarget.element.remove();
 
 		const inModal = !!delTarget.svg.closest(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body");
 		if (!inModal) {
 			void this.persistSvg(delTarget.svg);
 		}
 
-		const isZh = (getLocaleStrings().noticeUndo === "已撤销");
+		const isZh = isChineseLocale();
 		this.showSaveToast(isZh ? "已删除 UI 框 (Ctrl+Z 可撤销)" : "UI box deleted (Ctrl+Z to undo)");
 		return true;
 	}
@@ -730,9 +650,11 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		const scaleTarget = resolveScaleTarget(candidate, this.lastPointerX, this.lastPointerY);
 		if (!scaleTarget || !this.isInteractiveSvg(scaleTarget.svg)) return false;
 
-		this.history.recordSnapshot(scaleTarget.svg);
+		this.history.setActiveSvg(scaleTarget.svg);
+		const preScaleSnapshot = cleanSvgHtml(scaleTarget.svg.innerHTML);
 		const res = scaleCard(scaleTarget.element, scaleTarget.svg, factor);
 		if (!res) return false;
+		this.history.recordExplicitSnapshot(scaleTarget.svg, preScaleSnapshot);
 
 		const inModal = !!scaleTarget.svg.closest(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body");
 		if (!inModal) {
@@ -740,12 +662,13 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		}
 
 		const pct = Math.round(res.scale * 100);
-		const isZh = (getLocaleStrings().noticeUndo === "已撤销");
+		const isZh = isChineseLocale();
 		this.showSaveToast(isZh ? `UI 大小: ${pct}% (Ctrl+Z 可撤销)` : `UI Scale: ${pct}% (Ctrl+Z to undo)`);
 		return true;
 	}
 
 	public undo(svg?: SVGSVGElement | null): boolean {
+		this.commitActiveOverlay();
 		const res = this.history.undo(svg);
 		if (res) {
 			this.clearHover();
@@ -755,6 +678,7 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 	}
 
 	public redo(svg?: SVGSVGElement | null): boolean {
+		this.commitActiveOverlay();
 		const res = this.history.redo(svg);
 		if (res) {
 			this.clearHover();
@@ -771,20 +695,25 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		this.history.setActiveSvg(svg);
 	}
 
-	public async saveCurrentSvg(svg?: SVGSVGElement | null, keepHistory = false): Promise<void> {
+	public async saveCurrentSvg(svg?: SVGSVGElement | null, keepHistory = false): Promise<boolean> {
+		this.commitActiveOverlay();
+		this.clearHover();
 		const target = svg ??
 			this.history.getActiveSvg() ??
 			this.currentModalSvg ??
 			(document.querySelector(".a1-svg-modal-body svg, .svg-lightbox-content svg") as SVGSVGElement | null);
-		if (!target) return;
-		await this.persistSvg(target);
-		this.history.markSaved(target, keepHistory);
-		const svgPath = target.getAttribute(SVG_PATH_ATTR) || this.currentModalPath;
-		const name = svgPath ? (svgPath.split("/").pop() || "SVG") : "SVG";
-		this.showSaveToast(getLocaleStrings().noticeSaved(name));
+		if (!target) return false;
+		const ok = await this.persistSvg(target);
+		if (ok) {
+			this.history.markSaved(target, keepHistory);
+			return true;
+		}
+		new Notice(getLocaleStrings().noticeSaveFailed);
+		return false;
 	}
 
 	public discardCurrentSvg(svg?: SVGSVGElement | null): void {
+		this.cancelActiveOverlay();
 		const target = svg ?? this.history.getActiveSvg();
 		if (!target) return;
 		this.history.discard(target);
@@ -1081,8 +1010,13 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		text?.classList.add("a1-svg-hover-text");
 	}
 
-	private clearHover(): void {
-		this.hovered?.classList.remove("a1-svg-hover-text");
+	public clearHover(): void {
+		if (this.hovered) {
+			this.hovered.classList.remove("a1-svg-hover-text");
+			if (this.hovered.classList.length === 0) {
+				this.hovered.removeAttribute("class");
+			}
+		}
 		this.hovered = null;
 	}
 
@@ -1099,6 +1033,9 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 	private clearHoveredSvgTarget(): void {
 		if (this.hoveredSvgTarget && !(this.hoveredSvgTarget instanceof SVGElement)) {
 			this.hoveredSvgTarget.classList.remove("a1-svg-hover-image");
+			if (this.hoveredSvgTarget.classList.length === 0) {
+				this.hoveredSvgTarget.removeAttribute("class");
+			}
 		}
 		this.hoveredSvgTarget = null;
 	}
@@ -1108,6 +1045,10 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 		const svg = (textEl as SVGElement).ownerSVGElement ?? (textEl.closest("svg") as SVGSVGElement | null);
 		if (!hit || !svg) return;
 		this.overlay?.close();
+
+		// Capture clean baseline BEFORE any live-preview or background adaptation mutates the SVG
+		this.history.setActiveSvg(svg);
+		const preEditSnapshot = cleanSvgHtml(svg.innerHTML);
 
 		// Immediately adapt background if text already overflows
 		adaptBackgroundToText(hit.textEl);
@@ -1134,11 +1075,19 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			},
 			onCommit: (value) => {
 				this.overlay = null;
-				this.history.recordSnapshot(svg);
-				commitText(hit, value);
-				const inModal = !!svg.closest(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body");
-				if (!inModal) {
-					void this.persistSvg(svg);
+				const normNew = value.replace(/\u00a0/g, " ").trim();
+				const normInit = initialVal.replace(/\u00a0/g, " ").trim();
+				if (normNew === normInit) {
+					if (cleanSvgHtml(svg.innerHTML) !== preEditSnapshot) {
+						replaceSvgChildrenFromMarkup(svg, preEditSnapshot);
+					}
+				} else {
+					this.history.recordExplicitSnapshot(svg, preEditSnapshot);
+					commitText(hit, value);
+					const inModal = !!svg.closest(".a1-svg-modal-body, .svg-lightbox-content, .svg-lightbox-modal, .svg-lightbox-body");
+					if (!inModal) {
+						void this.persistSvg(svg);
+					}
 				}
 				const focusTarget = (svg.closest(".a1-svg-modal-dialog, .svg-lightbox-modal")
 					?? document.querySelector(".a1-svg-modal-dialog, .svg-lightbox-modal")) as HTMLElement | null;
@@ -1148,8 +1097,12 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 			},
 			onCancel: () => {
 				this.overlay = null;
-				writeText(hit.textEl, initialVal);
-				adaptBackgroundToText(hit.textEl, initialVal);
+				if (cleanSvgHtml(svg.innerHTML) !== preEditSnapshot) {
+					replaceSvgChildrenFromMarkup(svg, preEditSnapshot);
+				} else {
+					writeText(hit.textEl, initialVal);
+					adaptBackgroundToText(hit.textEl, initialVal);
+				}
 				const focusTarget = (svg.closest(".a1-svg-modal-dialog, .svg-lightbox-modal")
 					?? document.querySelector(".a1-svg-modal-dialog, .svg-lightbox-modal")) as HTMLElement | null;
 				if (focusTarget) {
@@ -1219,45 +1172,73 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 	 * writes directly to that file and refreshes note images.
 	 * Otherwise splices into the active Markdown note.
 	 */
-	public async persistSvg(svg: SVGSVGElement): Promise<void> {
-		const svgPath = svg.getAttribute(SVG_PATH_ATTR);
+	public async persistSvg(svg: SVGSVGElement): Promise<boolean> {
+		this.commitActiveOverlay();
+		this.clearHover();
+
+		const containerWithPath = svg.closest(`[${SVG_PATH_ATTR}]`);
+		const rawPath =
+			svg.getAttribute(SVG_PATH_ATTR) ||
+			containerWithPath?.getAttribute(SVG_PATH_ATTR) ||
+			(svg === this.currentModalSvg ? this.currentModalPath : null) ||
+			"";
+		const svgPath = sanitizeSvgLinkPath(rawPath);
+
 		if (svgPath) {
-			const file = this.app.vault.getAbstractFileByPath(svgPath);
+			svg.setAttribute(SVG_PATH_ATTR, svgPath);
 			const live = serializeSvg(svg);
-			if (file instanceof TFile) {
-				await this.app.vault.modify(file, live);
-			} else {
-				try {
-					await this.app.vault.adapter.write(svgPath, live);
-				} catch (err) {
-					console.error("Failed to write svg file via adapter:", err);
-				}
+			const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+			const sourcePath = activeView?.file?.path || this.app.workspace.getActiveFile()?.path || "";
+
+			this.lastSelfSave = { path: svgPath, timestamp: Date.now(), content: live };
+			const { ok, resolvedPath } = await writeVaultSvgFile(this.app, svgPath, live, sourcePath);
+			if (!ok) {
+				return false;
 			}
+
+			const finalPath = resolvedPath || svgPath;
+			this.lastSelfSave = { path: finalPath, timestamp: Date.now(), content: live };
+			svg.setAttribute(SVG_PATH_ATTR, finalPath);
+			if (containerWithPath) {
+				containerWithPath.setAttribute(SVG_PATH_ATTR, finalPath);
+			}
+			if (svg === this.currentModalSvg) {
+				this.currentModalPath = finalPath;
+			}
+
 			// Refresh <img> embeds referencing this SVG in the DOM
-			this.refreshImgEmbeds(svgPath);
-			// Dispatch event for other plugins (fluent-tasks, etc.)
-			window.dispatchEvent(new CustomEvent("a1-svg-updated", { detail: { path: svgPath, content: live } }));
-			const name = svgPath.split("/").pop() || "SVG";
+			this.refreshImgEmbeds(finalPath);
+			// Dispatch event for other plugins (fluent-tasks, etc.) with source: "self-save"
+			window.dispatchEvent(
+				new CustomEvent("a1-svg-updated", {
+					detail: { path: finalPath, content: live, source: "self-save" },
+				})
+			);
+			const name = finalPath.split("/").pop() || "SVG";
 			this.showSaveToast(getLocaleStrings().noticeSaved(name));
-			this.clearHover();
-			return;
+			return true;
 		}
 
 		// Splicing inline SVG in active Markdown file
 		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
 		const file = view?.file ?? this.app.workspace.getActiveFile();
-		if (!file) return;
+		if (!file) return false;
 		const marker = this.markerFor(svg);
 		const live = serializeSvg(svg);
+		let didSplice = false;
 		await this.app.vault.process(file, (data) => {
 			const span = matchSpan(data, this.domIndex(svg), marker);
 			if (!span) return data;
+			didSplice = true;
 			const stamped = ensureMarker(live, marker);
 			return spliceSvg(data, span, stamped);
 		});
-		const isZh = (getLocaleStrings().noticeUndo === "已撤销");
+		if (!didSplice) {
+			return false;
+		}
+		const isZh = isChineseLocale();
 		this.showSaveToast(isZh ? "SVG 已保存到笔记" : "SVG saved to note");
-		this.clearHover();
+		return true;
 	}
 
 	public refreshImgEmbeds(filePath: string): void {
@@ -1306,22 +1287,12 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 	public hotReloadModal(freshSvgContent: string): void {
 		if (!this.activeModal || !this.currentModalBody) return;
-		let processed = freshSvgContent.trim();
-		if (!processed.includes("viewBox") && !processed.includes("viewbox")) {
-			const widthMatch = processed.match(/width=["']?(\d+(?:\.\d+)?)px?["']?/i);
-			const heightMatch = processed.match(/height=["']?(\d+(?:\.\d+)?)px?["']?/i);
-			if (widthMatch && heightMatch) {
-				processed = processed.replace(/<svg\b/i, `<svg viewBox="0 0 ${widthMatch[1]} ${heightMatch[1]}"`);
-			}
-		}
-		if (this.currentModalPath) {
-			processed = processed.replace(/<svg\b/i, `<svg ${SVG_PATH_ATTR}="${this.currentModalPath}"`);
-		}
+		const processed = prepareSvgMarkup(freshSvgContent, this.currentModalPath || undefined);
 
 		try {
 			const parsed = new DOMParser().parseFromString(processed, "image/svg+xml");
 			const rootSvg = parsed.documentElement;
-			if (rootSvg) {
+			if (rootSvg && rootSvg.tagName.toLowerCase() !== "parsererror" && !rootSvg.querySelector("parsererror")) {
 				const adopted = document.adoptNode ? document.adoptNode(rootSvg) : rootSvg;
 				while (this.currentModalBody.firstChild) {
 					this.currentModalBody.firstChild.remove();
@@ -1329,11 +1300,14 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 				this.currentModalBody.appendChild(adopted);
 				const newModalSvg = this.currentModalBody.querySelector("svg") as SVGSVGElement | null;
 				if (newModalSvg) {
+					if (this.currentModalPath) {
+						newModalSvg.setAttribute(SVG_PATH_ATTR, this.currentModalPath);
+					}
 					this.currentModalSvg = newModalSvg;
 					this.history.setActiveSvg(newModalSvg);
 				}
 				window.dispatchEvent(new CustomEvent("a1-svg-updated", {
-					detail: { path: this.currentModalPath, content: processed }
+					detail: { path: this.currentModalPath, content: processed, source: "hot-reload" }
 				}));
 				const name = this.currentModalPath ? (this.currentModalPath.split("/").pop() || "SVG") : "SVG";
 				new Notice(getLocaleStrings().noticeSvgUpdated(name));
@@ -1345,18 +1319,10 @@ export default class A1SvgQuickEditorPlugin extends Plugin {
 
 	public async checkAndRefreshActiveSvg(): Promise<void> {
 		if (this.currentModalPath && this.currentModalSvg && this.activeModal) {
-			if (!this.history.isDirty(this.currentModalSvg)) {
+			if (!this.history.isDirty(this.currentModalSvg) && !this.isRecentSelfSave(this.currentModalPath)) {
 				try {
-					let diskContent = "";
-					if (await this.app.vault.adapter.exists(this.currentModalPath)) {
-						diskContent = await this.app.vault.adapter.read(this.currentModalPath);
-					} else {
-						const file = this.app.vault.getAbstractFileByPath(this.currentModalPath);
-						if (file instanceof TFile) {
-							diskContent = await this.app.vault.read(file);
-						}
-					}
-					if (diskContent) {
+					const { content: diskContent } = await readVaultSvgFile(this.app, this.currentModalPath);
+					if (diskContent && !this.isRecentSelfSave(this.currentModalPath, diskContent)) {
 						const currentLive = serializeSvg(this.currentModalSvg);
 						const normDisk = diskContent.replace(/\s+/g, " ").trim();
 						const normLive = currentLive.replace(/\s+/g, " ").trim();
