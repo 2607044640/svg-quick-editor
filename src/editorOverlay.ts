@@ -1,6 +1,8 @@
 export interface OverlayHandle {
 	input: HTMLInputElement;
 	close: () => void;
+	commit: () => void;
+	cancel: () => void;
 }
 
 export interface OverlayOptions {
@@ -58,6 +60,7 @@ export function openTextOverlay(parent: HTMLElement, opts: OverlayOptions): Over
 
 	let closed = false;
 	let composing = false;
+	let blurTimer: number | null = null;
 
 	// Suppress Alt key release default behavior so Windows Electron does not steal focus to the application menu
 	const suppressAlt = (e: KeyboardEvent) => {
@@ -70,6 +73,10 @@ export function openTextOverlay(parent: HTMLElement, opts: OverlayOptions): Over
 	const close = () => {
 		if (closed) return;
 		closed = true;
+		if (blurTimer != null) {
+			window.clearTimeout(blurTimer);
+			blurTimer = null;
+		}
 		window.removeEventListener("keyup", suppressAlt, { capture: true });
 		input.remove();
 		const focusTarget = (parent.closest(".a1-svg-modal-dialog, .svg-lightbox-modal")
@@ -105,10 +112,11 @@ export function openTextOverlay(parent: HTMLElement, opts: OverlayOptions): Over
 		handleLiveInput();
 	});
 	input.addEventListener("keydown", (e) => {
-		if (e.isComposing || composing || e.key === "Process") return;
+		if (e.isComposing || composing || e.key === "Process" || e.keyCode === 229) return;
 		if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === "s" || e.key === "S")) {
 			e.preventDefault();
 			e.stopPropagation();
+			e.stopImmediatePropagation();
 			commit();
 			if (opts.onSave) {
 				opts.onSave();
@@ -118,10 +126,12 @@ export function openTextOverlay(parent: HTMLElement, opts: OverlayOptions): Over
 		if (e.key === "Enter") {
 			e.preventDefault();
 			e.stopPropagation();
+			e.stopImmediatePropagation();
 			commit();
 		} else if (e.key === "Escape") {
 			e.preventDefault();
 			e.stopPropagation();
+			e.stopImmediatePropagation();
 			cancel();
 		}
 	});
@@ -138,7 +148,8 @@ export function openTextOverlay(parent: HTMLElement, opts: OverlayOptions): Over
 			return;
 		}
 		// Let click-outside and Enter settle before blur commits
-		window.setTimeout(() => {
+		blurTimer = window.setTimeout(() => {
+			blurTimer = null;
 			if (!closed) commit();
 		}, 60);
 	});
@@ -146,5 +157,5 @@ export function openTextOverlay(parent: HTMLElement, opts: OverlayOptions): Over
 	parent.appendChild(input);
 	input.focus();
 	input.select();
-	return { input, close };
+	return { input, close, commit, cancel };
 }

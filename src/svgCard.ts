@@ -684,11 +684,11 @@ export function serializeSvg(el: Element): string {
 	const attrs: string[] = [];
 	for (let i = 0; i < el.attributes.length; i++) {
 		const a = el.attributes[i];
-		if (a.name === "data-a1-svg-path" || a.name === "data-a1-pad") continue;
+		if (a.name === "data-a1-svg-path" || a.name === "data-a1-pad" || a.name === "data-a1-svg") continue;
 		if (a.name === "class") {
 			const cleaned = a.value
 				.split(/\s+/)
-				.filter((c) => c && c !== "a1-svg-hover-text")
+				.filter((c) => c && c !== "a1-svg-hover-text" && c !== "a1-svg-hover-image")
 				.join(" ");
 			if (!cleaned) continue;
 			attrs.push(`class="${escapeAttr(cleaned)}"`);
@@ -1176,7 +1176,7 @@ export function snapDelta(
 	const self = measureBox(moving, svg);
 	if (!self) return { dx: 0, dy: 0, guides: [] };
 
-	const movingIsSmall = isSmallBox(self, moving, svg);
+	const movingIsSmall = isSmallBox(self, moving);
 	const targetEls = collectAlignTargets(svg, moving);
 
 	interface PeerItem {
@@ -1189,7 +1189,7 @@ export function snapDelta(
 	for (const t of targetEls) {
 		const box = measureBox(t, svg);
 		if (!box) continue;
-		peers.push({ el: t, box, isSmall: isSmallBox(box, t, svg) });
+		peers.push({ el: t, box, isSmall: isSmallBox(box, t) });
 	}
 
 	const xSnap = bestAxisSnap(self, peers, "x", pxPerMm, movingIsSmall);

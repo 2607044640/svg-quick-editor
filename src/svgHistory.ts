@@ -1,8 +1,12 @@
 export function cleanSvgHtml(html: string): string {
 	return html
-		.replace(/\s*class="[^"]*a1-svg-hover-[^"]*"/g, "")
-		.replace(/\s*a1-svg-hover-text/g, "")
-		.replace(/\s*a1-svg-hover-image/g, "")
+		.replace(/\s+class="([^"]*)"/g, (_match, clsVal: string) => {
+			const cleaned = clsVal
+				.split(/\s+/)
+				.filter((c) => c && c !== "a1-svg-hover-text" && c !== "a1-svg-hover-image")
+				.join(" ");
+			return cleaned ? ` class="${cleaned}"` : "";
+		})
 		.replace(/\s+data-a1-[a-z0-9_-]+(?:="[^"]*")?/g, "")
 		.replace(/<g\b[^>]*\bdata-a1-align="1"[^>]*>[\s\S]*?<\/g>/g, "")
 		.trim();
@@ -19,6 +23,9 @@ export function replaceSvgChildrenFromMarkup(target: SVGSVGElement, markup: stri
 		try {
 			const parsedDoc = new parserConstructor().parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${markup}</svg>`, "image/svg+xml");
 			const root = parsedDoc.documentElement;
+			if (!root || root.tagName.toLowerCase() === "parsererror" || root.querySelector("parsererror")) {
+				return;
+			}
 			while (target.firstChild) {
 				target.removeChild(target.firstChild);
 			}
@@ -33,11 +40,12 @@ export function replaceSvgChildrenFromMarkup(target: SVGSVGElement, markup: stri
 }
 
 /**
- * In-memory Undo/Redo history manager for SVG editing.
- * Tracks temporary snapshots per SVG element during an editing session.
+ * In-memory Undo/Redo and Dirty-State manager for SVG editing.
+ * Tracks snapshots and saved baseline per SVG element during an editing session.
  */
 export class SvgHistoryManager {
-	private initialContent = new WeakMap<SVGSVGElement, string>();
+	private savedContent = new WeakMap<SVGSVGElement, string>();
+	private dirtyFlags = new WeakMap<SVGSVGElement, boolean>();
 	private undoStacks = new WeakMap<SVGSVGElement, string[]>();
 	private redoStacks = new WeakMap<SVGSVGElement, string[]>();
 	private maxStackSize = 50;
@@ -45,8 +53,9 @@ export class SvgHistoryManager {
 
 	public setActiveSvg(svg: SVGSVGElement | null): void {
 		this.activeSvg = svg;
-		if (svg && !this.initialContent.has(svg)) {
-			this.initialContent.set(svg, cleanSvgHtml(svg.innerHTML));
+		if (svg && !this.savedContent.has(svg)) {
+			this.savedContent.set(svg, cleanSvgHtml(svg.innerHTML));
+			this.dirtyFlags.set(svg, false);
 			this.undoStacks.set(svg, []);
 			this.redoStacks.set(svg, []);
 		}
@@ -72,15 +81,59 @@ export class SvgHistoryManager {
 	public recordSnapshot(svg: SVGSVGElement): void {
 		this.setActiveSvg(svg);
 		const currentHtml = cleanSvgHtml(svg.innerHTML);
+		this.recordExplicitSnapshot(svg, currentHtml);
+	}
+
+	/**
+	 * Records a pre-captured snapshot string before a multi-step or live-preview mutation.
+	 */
+	public recordExplicitSnapshot(svg: SVGSVGElement, snapshotHtml: string): void {
+		this.setActiveSvg(svg);
+		const cleaned = cleanSvgHtml(snapshotHtml);
 		const stack = this.undoStacks.get(svg) || [];
-		if (stack.length === 0 || stack[stack.length - 1] !== currentHtml) {
-			stack.push(currentHtml);
+		if (stack.length === 0 || stack[stack.length - 1] !== cleaned) {
+			stack.push(cleaned);
 			if (stack.length > this.maxStackSize) {
 				stack.shift();
 			}
 			this.undoStacks.set(svg, stack);
 		}
 		this.redoStacks.set(svg, []);
+		this.dirtyFlags.set(svg, true);
+	}
+
+	/**
+	 * Pops the latest snapshot if a tentative operation resulted in no actual DOM change.
+	 */
+	public popSnapshot(svg?: SVGSVGElement | null): void {
+		const target = svg ?? this.getActiveSvg();
+		if (!target) return;
+		const stack = this.undoStacks.get(target);
+		if (stack && stack.length > 0) {
+			stack.pop();
+			this.undoStacks.set(target, stack);
+		}
+		this.syncDirtyFlag(target);
+	}
+
+	/**
+	 * Re-evaluates and updates the dirty flag for the given SVG against its saved baseline.
+	 */
+	public markDirty(svg?: SVGSVGElement | null): void {
+		const target = svg ?? this.getActiveSvg();
+		if (!target) return;
+		this.setActiveSvg(target);
+		this.syncDirtyFlag(target);
+	}
+
+	private syncDirtyFlag(target: SVGSVGElement): void {
+		const saved = this.savedContent.get(target);
+		if (saved == null) {
+			this.dirtyFlags.set(target, false);
+			return;
+		}
+		const isDifferent = cleanSvgHtml(target.innerHTML) !== saved;
+		this.dirtyFlags.set(target, isDifferent);
 	}
 
 	public undo(svg?: SVGSVGElement | null): boolean {
@@ -97,6 +150,7 @@ export class SvgHistoryManager {
 		this.redoStacks.set(target, redoStack);
 
 		replaceSvgChildrenFromMarkup(target, prevHtml);
+		this.syncDirtyFlag(target);
 		return true;
 	}
 
@@ -114,42 +168,47 @@ export class SvgHistoryManager {
 		this.undoStacks.set(target, undoStack);
 
 		replaceSvgChildrenFromMarkup(target, nextHtml);
+		this.syncDirtyFlag(target);
 		return true;
 	}
 
 	public isDirty(svg?: SVGSVGElement | null): boolean {
 		const target = svg ?? this.getActiveSvg();
 		if (!target) return false;
-		const undoStack = this.undoStacks.get(target);
-		// If no modifications have been recorded in the undo stack, it is definitely not dirty
-		if (!undoStack || undoStack.length === 0) {
+		if (!this.dirtyFlags.get(target)) {
 			return false;
 		}
-		const initial = this.initialContent.get(target);
-		if (initial == null) return false;
-		return cleanSvgHtml(target.innerHTML) !== cleanSvgHtml(initial);
+		const saved = this.savedContent.get(target);
+		if (saved == null) return false;
+		const isDifferent = cleanSvgHtml(target.innerHTML) !== saved;
+		if (!isDifferent) {
+			this.dirtyFlags.set(target, false);
+		}
+		return isDifferent;
 	}
 
 	public getInitialContent(svg?: SVGSVGElement | null): string | null {
 		const target = svg ?? this.getActiveSvg();
 		if (!target) return null;
-		return this.initialContent.get(target) ?? null;
+		return this.savedContent.get(target) ?? null;
 	}
 
 	public discard(svg?: SVGSVGElement | null): void {
 		const target = svg ?? this.getActiveSvg();
 		if (!target) return;
-		const initial = this.initialContent.get(target);
-		if (initial != null) {
-			replaceSvgChildrenFromMarkup(target, initial);
+		const saved = this.savedContent.get(target);
+		if (saved != null) {
+			replaceSvgChildrenFromMarkup(target, saved);
 		}
+		this.dirtyFlags.set(target, false);
 		this.clear(target);
 	}
 
 	public markSaved(svg?: SVGSVGElement | null, keepHistory = false): void {
 		const target = svg ?? this.getActiveSvg();
 		if (!target) return;
-		this.initialContent.set(target, cleanSvgHtml(target.innerHTML));
+		this.savedContent.set(target, cleanSvgHtml(target.innerHTML));
+		this.dirtyFlags.set(target, false);
 		if (!keepHistory) {
 			this.clear(target);
 		}
@@ -160,6 +219,7 @@ export class SvgHistoryManager {
 		if (target) {
 			this.undoStacks.set(target, []);
 			this.redoStacks.set(target, []);
+			this.dirtyFlags.set(target, false);
 		}
 		if (this.activeSvg === target) {
 			this.activeSvg = null;
